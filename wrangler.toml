@@ -1,0 +1,9 @@
+name = "my-auth-project"
+main = "worker.js"
+compatibility_date = "2026-05-24"
+
+# חיבור למסד הנתונים
+[[d1_databases]]
+binding = "DB"
+database_name = "salamon" # שנה לשם מסד הנתונים שיצרת
+database_id = "c99ef333-9929-4886-b160-b6d563b29cea" # יש להעתיק מדאשבורד קלאודפלייר
