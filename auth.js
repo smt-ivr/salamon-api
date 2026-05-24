@@ -1,42 +1,50 @@
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 
-// 1. צומת הכוונה חכם - בדיקת טלפון (מורשה + האם כבר רשום)
-export async function handleCheckPhone(request, env) {
-    const { phone } = await request.json();
-    const token = env.YEMOT_TOKEN;
+// 1. צומת הכוונה חכם - מקבל טלפון או אימייל
+export async function handleCheckIdentifier(request, env) {
+    const { identifier } = await request.json();
 
-    // שלב א: בודקים קודם כל אם הוא מורשה במערכת החיצונית (ימות)
-    const phoneStatus = await checkPhoneStatus(phone, token);
-    
-    if (!phoneStatus.exists) {
-        return Response.json({ 
-            authorized: false, 
-            registered: false,
-            message: "המספר אינו מורשה במערכת (לא קיים בימות המשיח)." 
-        });
-    }
-
-    // שלב ב: הוא מורשה. האם הוא כבר פתח חשבון בעבר?
-    const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
+    // שלב א: האם המזהה (טלפון או אימייל) כבר רשום במסד הנתונים?
+    const existingUser = await env.DB.prepare("SELECT phone FROM users WHERE phone = ? OR email = ?").bind(identifier, identifier).first();
     
     if (existingUser) {
         return Response.json({
-            authorized: true,
-            registered: true,
-            phone: phone,
-            message: "המשתמש מורשה וכבר רשום. יש להפנות להתחברות."
+            isRegistered: true,
+            identifier: identifier,
+            message: "המשתמש קיים במערכת, מועבר להתחברות."
         });
     }
 
-    // שלב ג: הוא מורשה אך עדיין לא פתח חשבון (יש להפנות להרשמה + להחזיר את שמו)
-    const name = await getNameFromIni(phone, token);
+    // שלב ב: המשתמש לא רשום. אם הוא הזין אימייל, נחזיר שגיאה (פתיחת חשבון מתבצעת רק לפי טלפון)
+    if (identifier.includes('@')) {
+        return Response.json({
+            isRegistered: false,
+            authorized: false,
+            error: "לא נמצא חשבון עם אימייל זה. לפתיחת חשבון חדש חובה להזין מספר טלפון."
+        }, { status: 404 });
+    }
+
+    // שלב ג: המשתמש הזין טלפון ואינו רשום. נבדוק הרשאה מול ימות המשיח.
+    const token = env.YEMOT_TOKEN;
+    const phoneStatus = await checkPhoneStatus(identifier, token);
+    
+    if (!phoneStatus.exists) {
+        return Response.json({ 
+            isRegistered: false,
+            authorized: false, 
+            error: "המספר אינו מורשה במערכת (לא קיים בימות המשיח)." 
+        }, { status: 403 });
+    }
+
+    // שלב ד: המספר מורשה ולא רשום, נשלוף את השם ונפנה להרשמה
+    const name = await getNameFromIni(identifier, token);
 
     return Response.json({
+        isRegistered: false,
         authorized: true,
-        registered: false,
-        phone: phone,
-        name: name, // הלקוח ישתמש בזה כדי למלא אוטומטית את הטופס
-        message: "המשתמש מורשה וטרם נרשם. יש להפנות להרשמה."
+        phone: identifier,
+        name: name,
+        message: "המשתמש מורשה וטרם נרשם. מועבר להרשמה."
     });
 }
 
@@ -77,7 +85,7 @@ export async function handleRegister(request, env) {
             token: token
         });
     } catch (e) {
-        return Response.json({ error: "שגיאת רישום: " + e.message }, { status: 400 });
+        return Response.json({ error: "שגיאת רישום. ייתכן והאימייל כבר תפוס." }, { status: 400 });
     }
 }
 
@@ -110,12 +118,12 @@ export async function handleLogin(request, env) {
     });
 }
 
-// 4. עדכון פרופיל משתמש
+// 4. עדכון פרופיל
 export async function handleUpdateProfile(request, env) {
     const { phone, oldPassword, newPassword, newEmail } = await request.json();
 
     if (!phone || !oldPassword) {
-        return Response.json({ error: "חובה להזין מספר טלפון וסיסמה נוכחית" }, { status: 400 });
+        return Response.json({ error: "חובה להזין מספר טלפון וסיסמה נוכחית לאימות" }, { status: 400 });
     }
 
     const user = await env.DB.prepare("SELECT * FROM users WHERE phone = ? AND password = ?")
@@ -138,6 +146,6 @@ export async function handleUpdateProfile(request, env) {
 
         return Response.json({ success: true, message: "הפרטים עודכנו בהצלחה" });
     } catch (e) {
-        return Response.json({ error: "שגיאה בעדכון הנתונים" }, { status: 400 });
+        return Response.json({ error: "שגיאה בעדכון הנתונים. ייתכן והמייל תפוס." }, { status: 400 });
     }
 }
