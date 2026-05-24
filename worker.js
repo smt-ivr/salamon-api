@@ -2,11 +2,15 @@ import {
     handleCheckPhone, 
     handleRegister, 
     handleLogin, 
-    handleUpdateProfile,
+    handleUpdateProfile
+} from './auth.js';
+
+// הוספת הייבוא החדש עבור קובץ הניהול
+import {
     handleAdminLogin,
     handleAdminGetUsers,
     handleAdminUpdateUser
-} from './auth.js';
+} from './admin.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -26,7 +30,7 @@ export default {
         try {
             let response;
             
-            // נתיבי משתמשים רגילים
+            // נתיבי משתמשים (מגיעים מ- auth.js)
             if (request.method === "POST" && pathname.endsWith("/api/check-phone")) {
                 response = await handleCheckPhone(request, env);
             } 
@@ -39,7 +43,7 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
                 response = await handleUpdateProfile(request, env);
             }
-            // נתיבי ניהול (Admin)
+            // נתיבי ניהול (מגיעים מ- admin.js)
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) {
                 response = await handleAdminLogin(request, env);
             }
