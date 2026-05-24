@@ -1,5 +1,6 @@
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 
+// 1. כניסת מנהל
 export async function handleAdminLogin(request, env) {
     const { username, password } = await request.json();
 
@@ -10,7 +11,7 @@ export async function handleAdminLogin(request, env) {
         return Response.json({ error: "שם משתמש או סיסמת מנהל שגויים" }, { status: 401 });
     }
 
-    // כעת מחזיר את פרטי המנהל כפי שביקשת
+    // מחזיר את פרטי המנהל האמיתיים כפי שביקשת (במקום "admin:admin")
     return Response.json({ 
         success: true, 
         message: "התחברת כמנהל בהצלחה", 
@@ -18,15 +19,15 @@ export async function handleAdminLogin(request, env) {
             username: admin.username,
             password: admin.password
         },
-        // טוקן המשמש לאימות הבקשות הבאות
+        // טוקן לאימות הפעולות הבאות (מבוסס על הנתונים האמיתיים מהמסד)
         adminToken: `${admin.username}:${admin.password}` 
     });
 }
 
+// 2. שליפת משתמשים (למנהל בלבד)
 export async function handleAdminGetUsers(request, env) {
     const { adminToken } = await request.json();
     
-    // אבטחה: מוודאים שמי שמבקש הוא באמת מנהל
     if (!adminToken) return Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
     const [username, password] = adminToken.split(':');
     const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
@@ -40,7 +41,7 @@ export async function handleAdminGetUsers(request, env) {
             const phoneStatus = await checkPhoneStatus(u.phone, env.YEMOT_TOKEN);
             return {
                 phone: u.phone,
-                email: u.email, // הבאג תוקן, כעת יחזור כראוי
+                email: u.email,
                 password: u.password,
                 name: name || "לא נמצא שם בימות",
                 connectedToTzintukim: phoneStatus.active
@@ -53,10 +54,10 @@ export async function handleAdminGetUsers(request, env) {
     }
 }
 
+// 3. עדכון משתמש (למנהל בלבד)
 export async function handleAdminUpdateUser(request, env) {
     const { adminToken, phone, newEmail, newPassword } = await request.json();
 
-    // אבטחה: וידוא מנהל גם בעריכה
     if (!adminToken) return Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
     const [username, adminPass] = adminToken.split(':');
     const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
@@ -75,7 +76,7 @@ export async function handleAdminUpdateUser(request, env) {
         const finalPassword = newPassword || user.password;
         const finalEmail = newEmail !== undefined ? (newEmail || null) : user.email;
 
-        // התיקון לבאג הנתונים ההפוכים (הסדר ב-bind הותאם בדיוק לסדר ב-SET)
+        // עדכון משתמש במסד
         await env.DB.prepare("UPDATE users SET email = ?, password = ? WHERE phone = ?")
             .bind(finalEmail, finalPassword, phone).run();
 
