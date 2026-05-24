@@ -1,34 +1,46 @@
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 
-// 1. בדיקת מספר טלפון (רק אם לא קיים חשבון)
+// 1. צומת הכוונה חכם - בדיקת טלפון (מורשה + האם כבר רשום)
 export async function handleCheckPhone(request, env) {
     const { phone } = await request.json();
     const token = env.YEMOT_TOKEN;
 
-    // בדיקה האם המספר כבר רשום במסד הנתונים שלנו
-    const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
-    if (existingUser) {
-        return Response.json({ error: "המספר כבר רשום במערכת כמשתמש קיים." }, { status: 400 });
-    }
-
+    // שלב א: בודקים קודם כל אם הוא מורשה במערכת החיצונית (ימות)
     const phoneStatus = await checkPhoneStatus(phone, token);
     
     if (!phoneStatus.exists) {
-        return Response.json({ error: "המספר אינו מורשה להירשם בימות המשיח." }, { status: 403 });
+        return Response.json({ 
+            authorized: false, 
+            registered: false,
+            message: "המספר אינו מורשה במערכת (לא קיים בימות המשיח)." 
+        });
     }
 
-    // שליפת השם ישירות מימות המשיח
+    // שלב ב: הוא מורשה. האם הוא כבר פתח חשבון בעבר?
+    const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
+    
+    if (existingUser) {
+        return Response.json({
+            authorized: true,
+            registered: true,
+            phone: phone,
+            message: "המשתמש מורשה וכבר רשום. יש להפנות להתחברות."
+        });
+    }
+
+    // שלב ג: הוא מורשה אך עדיין לא פתח חשבון (יש להפנות להרשמה + להחזיר את שמו)
     const name = await getNameFromIni(phone, token);
 
     return Response.json({
-        allowed: true,
+        authorized: true,
+        registered: false,
         phone: phone,
-        name: name, 
-        connectedToTzintukim: phoneStatus.active // שונה לסטטוס חיבור לצינתוקים
+        name: name, // הלקוח ישתמש בזה כדי למלא אוטומטית את הטופס
+        message: "המשתמש מורשה וטרם נרשם. יש להפנות להרשמה."
     });
 }
 
-// 2. הרשמה (ללא שמירת שם בטבלה)
+// 2. הרשמה
 export async function handleRegister(request, env) {
     const { phone, email, password, passwordConfirm } = await request.json();
 
@@ -42,7 +54,6 @@ export async function handleRegister(request, env) {
         return Response.json({ error: "הסיסמה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
     }
 
-    // ודוא שוב שלא קיים
     const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
     if (existingUser) {
         return Response.json({ error: "מספר הטלפון הזה כבר רשום במערכת" }, { status: 400 });
@@ -54,7 +65,6 @@ export async function handleRegister(request, env) {
     }
 
     try {
-        // הכנסה ללא עמודת השם כפי שביקשת
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password) VALUES (?, ?, ?)`
         ).bind(phone, email || null, password).run();
@@ -67,15 +77,11 @@ export async function handleRegister(request, env) {
             token: token
         });
     } catch (e) {
-        if (e.message.includes("UNIQUE constraint failed")) {
-            if (e.message.includes("phone")) return Response.json({ error: "מספר הטלפון כבר קיים במערכת" }, { status: 400 });
-            if (e.message.includes("email")) return Response.json({ error: "כתובת האימייל כבר קיימת במערכת" }, { status: 400 });
-        }
         return Response.json({ error: "שגיאת רישום: " + e.message }, { status: 400 });
     }
 }
 
-// 3. התחברות משתמש
+// 3. התחברות
 export async function handleLogin(request, env) {
     const { identifier, password } = await request.json();
 
@@ -87,7 +93,6 @@ export async function handleLogin(request, env) {
         return Response.json({ error: "שם משתמש או סיסמה שגויים" }, { status: 401 });
     }
 
-    // טעינת השם והסטטוס תמיד ובזמן אמת מימות המשיח בלבד
     const name = await getNameFromIni(user.phone, env.YEMOT_TOKEN);
     const phoneStatus = await checkPhoneStatus(user.phone, env.YEMOT_TOKEN);
 
@@ -98,19 +103,19 @@ export async function handleLogin(request, env) {
         token: token,
         user: {
             phone: user.phone,
-            name: name, // נטען דינמית מימות
+            name: name,
             email: user.email,
             connectedToTzintukim: phoneStatus.active
         }
     });
 }
 
-// 4. עדכון פרופיל משתמש (שינוי סיסמה ומייל עם אימות סיסמה ישנה)
+// 4. עדכון פרופיל משתמש
 export async function handleUpdateProfile(request, env) {
     const { phone, oldPassword, newPassword, newEmail } = await request.json();
 
     if (!phone || !oldPassword) {
-        return Response.json({ error: "חובה להזין מספר טלפון וסיסמה נוכחית לצורך אימות" }, { status: 400 });
+        return Response.json({ error: "חובה להזין מספר טלפון וסיסמה נוכחית" }, { status: 400 });
     }
 
     const user = await env.DB.prepare("SELECT * FROM users WHERE phone = ? AND password = ?")
@@ -128,80 +133,11 @@ export async function handleUpdateProfile(request, env) {
         const finalPassword = newPassword || oldPassword;
         const finalEmail = newEmail !== undefined ? (newEmail || null) : user.email;
 
-        await env.DB.prepare("UPDATE users SET password = ?, email = ? WHERE phone = ?")
-            .bind(finalPassword, finalEmail, phone).run();
+        await env.DB.prepare("UPDATE users SET email = ?, password = ? WHERE phone = ?")
+            .bind(finalEmail, finalPassword, phone).run();
 
         return Response.json({ success: true, message: "הפרטים עודכנו בהצלחה" });
     } catch (e) {
-        if (e.message.includes("UNIQUE constraint failed")) {
-            return Response.json({ error: "כתובת האימייל הזו כבר תפוסה על ידי משתמש אחר" }, { status: 400 });
-        }
-        return Response.json({ error: "שגיאה בעדכון הנתונים: " + e.message }, { status: 400 });
-    }
-}
-
-// ==========================================
-// 5. אזור מנהל (Admin)
-// ==========================================
-
-export async function handleAdminLogin(request, env) {
-    const { username, password } = await request.json();
-
-    const admin = await env.DB.prepare("SELECT * FROM admins WHERE username = ? AND password = ?")
-        .bind(username, password).first();
-
-    if (!admin) {
-        return Response.json({ error: "שם משתמש או סיסמת מנהל שגויים" }, { status: 401 });
-    }
-
-    return Response.json({ success: true, message: "התחברת כמנהל בהצלחה", adminToken: `admin:${username}` });
-}
-
-// צפייה בכל המשתמשים ופרטיהם המלאים (כולל טעינת שם מימות המשיח בזמן אמת)
-export async function handleAdminGetUsers(request, env) {
-    try {
-        const { results } = await env.DB.prepare("SELECT phone, email, password FROM users").all();
-        
-        const usersWithFullDetails = await Promise.all(results.map(async (u) => {
-            const name = await getNameFromIni(u.phone, env.YEMOT_TOKEN);
-            const phoneStatus = await checkPhoneStatus(u.phone, env.YEMOT_TOKEN);
-            return {
-                phone: u.phone,
-                email: u.email,
-                password: u.password,
-                name: name || "לא נמצא שם בימות",
-                connectedToTzintukim: phoneStatus.active
-            };
-        }));
-
-        return Response.json({ success: true, users: usersWithFullDetails });
-    } catch (e) {
-        return Response.json({ error: "שגיאה בשליפת המשתמשים: " + e.message }, { status: 400 });
-    }
-}
-
-// עדכון פרטי משתמש על ידי מנהל
-export async function handleAdminUpdateUser(request, env) {
-    const { phone, newEmail, newPassword } = await request.json();
-
-    if (!phone) {
-        return Response.json({ error: "חובה לציין מספר טלפון של המשתמש לעדכון" }, { status: 400 });
-    }
-
-    try {
-        const user = await env.DB.prepare("SELECT * FROM users WHERE phone = ?").bind(phone).first();
-        if (!user) {
-            return Response.json({ error: "המשתמש שביקשת לעדכן לא נמצא" }, { status: 404 });
-        }
-
-        const finalPassword = newPassword || user.password;
-        const finalEmail = newEmail !== undefined ? (newEmail || null) : user.email;
-
-        await env.DB.prepare("UPDATE users SET email = ?, password = ? WHERE phone = ?")
-            .bind(finalPassword, finalEmail, phone).run();
-
-        return Response.json({ success: true, message: "נתוני המשתמש עודכנו בהצלחה על ידי המנהל" });
-    } catch (e) {
-        return Response.json({ error: "שגיאה בעדכון המשתמש: " + e.message }, { status: 400 });
+        return Response.json({ error: "שגיאה בעדכון הנתונים" }, { status: 400 });
     }
 }
