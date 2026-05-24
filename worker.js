@@ -14,17 +14,20 @@ export default {
         }
 
         const url = new URL(request.url);
+        // הסרת לוכסן (slash) מסוף הנתיב אם קיים, כדי למנוע בעיות התאמה
+        const pathname = url.pathname.replace(/\/$/, "");
 
         try {
             let response;
             
-            if (request.method === "POST" && url.pathname === "/api/check-phone") {
+            // בדיקה באמצעות endsWith מאפשרת לזהות את הנתיב גם תחת תת-תיקייה כמו /salamon/api
+            if (request.method === "POST" && pathname.endsWith("/api/check-phone")) {
                 response = await handleCheckPhone(request, env);
             } 
-            else if (request.method === "POST" && url.pathname === "/api/register") {
+            else if (request.method === "POST" && pathname.endsWith("/api/register")) {
                 response = await handleRegister(request, env);
             } 
-            else if (request.method === "POST" && url.pathname === "/api/login") {
+            else if (request.method === "POST" && pathname.endsWith("/api/login")) {
                 response = await handleLogin(request, env);
             } 
             else {
