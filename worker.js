@@ -20,7 +20,7 @@ export default {
         try {
             let response;
             
-            // בדיקה באמצעות endsWith מאפשרת לזהות את הנתיב גם תחת תת-תיקייה כמו /salamon/api
+            // בדיקה באמצעות endsWith מאפשרת לזהות את הנתיב גם תחת תת תיקייה כמו /salamon/api
             if (request.method === "POST" && pathname.endsWith("/api/check-phone")) {
                 response = await handleCheckPhone(request, env);
             } 
