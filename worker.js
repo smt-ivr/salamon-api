@@ -82,16 +82,20 @@ export default {
                         } else {
                             // אימות מנהל עבר בהצלחה - ביצוע הפעולה המבוקשת
                             if (pathname.endsWith("/api/verify/admin/logs")) {
-                                response = Response.json(await verifySystem.getLogs());
+                                const limit = body.limit || 100;
+                                const offset = body.offset || 0;
+                                response = Response.json(await verifySystem.getLogs(limit, offset));
                             }
                             else if (pathname.endsWith("/api/verify/admin/blocks")) {
                                 response = Response.json(await verifySystem.getBlocks());
                             }
                             else if (pathname.endsWith("/api/verify/admin/block")) {
-                                response = Response.json(await verifySystem.blockTarget(body.type, body.value, body.reason, body.durationMinutes, userIp));
+                                // התאמה לקבלת יחידות זמן במקום רק דקות
+                                response = Response.json(await verifySystem.blockTarget(body.type, body.value, body.reason, body.durationValue, body.durationUnit, userIp));
                             }
                             else if (pathname.endsWith("/api/verify/admin/unblock")) {
-                                response = Response.json(await verifySystem.unblockTarget(body.id, userIp));
+                                // שימוש ב-target כדי שיוכל למחוק לפי טלפון/IP ולא רק ID
+                                response = Response.json(await verifySystem.unblockTarget(body.target, userIp));
                             }
                             else if (pathname.endsWith("/api/verify/admin/clean")) {
                                 response = Response.json(await verifySystem.cleanOldLogs());
