@@ -26,11 +26,13 @@ export class VerificationSystem {
     getCooldownMinutes(attempts) {
         if (attempts === 0) return 0;
         if (attempts === 1) return 2;
-        if (attempts === 2) return 10;
-        if (attempts === 3) return 20;
-        if (attempts === 4) return 30;
-        if (attempts === 5) return 40;
-        return 60;
+        if (attempts === 2) return 4;
+        if (attempts === 3) return 6;
+        if (attempts === 4) return 15;
+        if (attempts === 5) return 20;
+        if (attempts === 6) return 30;
+        if (attempts === 7) return 50;
+        return 60; // מניסיון 8 ומעלה
     }
 
     // 1. שליחת בקשת אימות (כולל לוגיקה עסקית מלאה)
