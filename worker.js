@@ -64,7 +64,7 @@ export default {
             // ==========================================
             // נתיבי מערכת אימות - ניהול בלבד (Admin)
             // ==========================================
-            else if (pathname.startsWith("/api/verify/admin/")) {
+            else if (pathname.includes("/api/verify/admin/")) {
                 if (request.method !== "POST") {
                     response = Response.json({ error: "מתודה לא מורשית" }, { status: 405 });
                 } else {
