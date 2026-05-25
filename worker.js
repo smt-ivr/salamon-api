@@ -28,7 +28,7 @@ export default {
 
         const url = new URL(request.url);
         const pathname = url.pathname.replace(/\/$/, "");
-        
+
         // משיכת כתובת ה-IP של המשתמש (או ברירת מחדל אם לא קיים)
         const userIp = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
@@ -39,7 +39,7 @@ export default {
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
             // ==========================================
-            // נתיבי מערכת האימות (צינתוקים) - חדש
+            // נתיבי מערכת האימות (צינתוקים) - משתמש רגיל
             // ==========================================
             
             if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
@@ -60,10 +60,47 @@ export default {
                     response = Response.json(result, { status: result.success ? 200 : 400 });
                 }
             }
-            else if (request.method === "POST" && pathname.endsWith("/api/verify/clean")) {
-                // נתיב לניקוי לוגים ישנים (מעל 30 יום) - מומלץ להפעיל באמצעות CRON בעתיד
-                const result = await verifySystem.cleanOldLogs();
-                response = Response.json(result, { status: result.success ? 200 : 500 });
+
+            // ==========================================
+            // נתיבי מערכת אימות - ניהול בלבד (Admin)
+            // ==========================================
+            else if (pathname.startsWith("/api/verify/admin/")) {
+                if (request.method !== "POST") {
+                    response = Response.json({ error: "מתודה לא מורשית" }, { status: 405 });
+                } else {
+                    const body = await request.json();
+                    const adminToken = body.adminToken;
+                    
+                    if (!adminToken) {
+                        response = Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
+                    } else {
+                        const [username, adminPass] = adminToken.split(':');
+                        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
+                        
+                        if (!admin) {
+                            response = Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+                        } else {
+                            // אימות מנהל עבר בהצלחה - ביצוע הפעולה המבוקשת
+                            if (pathname.endsWith("/api/verify/admin/logs")) {
+                                response = Response.json(await verifySystem.getLogs());
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/blocks")) {
+                                response = Response.json(await verifySystem.getBlocks());
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/block")) {
+                                response = Response.json(await verifySystem.blockTarget(body.type, body.value, body.reason, body.durationMinutes, userIp));
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/unblock")) {
+                                response = Response.json(await verifySystem.unblockTarget(body.id, userIp));
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/clean")) {
+                                response = Response.json(await verifySystem.cleanOldLogs());
+                            } else {
+                                response = Response.json({ error: "נתיב ניהול לא נמצא" }, { status: 404 });
+                            }
+                        }
+                    }
+                }
             }
 
             // ==========================================
