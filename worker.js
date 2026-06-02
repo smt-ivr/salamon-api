@@ -1,87 +1,160 @@
-import { handleCampaignInfo, handleSolicitorsList, handleDonationInfo } from './campaign.js';
-import { handleWebhookRequest } from './webhook.js';
-import { handleRegister, handleLogin, handleDashboard, handleUpdateTarget } from './solicitor.js';
-import { handleYemotStatus, handleYemotDonate } from './yemot.js'; // הייבוא החדש של ימות המשיח
-import { handlePublicDonations } from './public-donations.js';
+import { 
+    handleCheckIdentifier, 
+    handleRegister, 
+    handleLogin, 
+    handleUpdateProfile
+} from './auth.js';
 
-function corsResponse(response) {
-    const newHeaders = new Headers(response.headers);
-    newHeaders.set('Access-Control-Allow-Origin', '*');
-    newHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    newHeaders.set('Access-Control-Allow-Headers', 'Content-Type');
-    return new Response(response.body, { status: response.status, headers: newHeaders });
-}
+import {
+    handleAdminLogin,
+    handleAdminGetUsers,
+    handleAdminUpdateUser
+} from './admin.js';
+
+// ייבוא מערכת האימות החדשה
+import { VerificationSystem } from './verification.js';
 
 export default {
     async fetch(request, env, ctx) {
-        const url = new URL(request.url);
-        const path = url.pathname;
+        const corsHeaders = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET,HEAD,POST,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        };
 
-        if (request.method === 'OPTIONS') {
-            return corsResponse(new Response(null, { status: 204 }));
+        if (request.method === "OPTIONS") {
+            return new Response(null, { headers: corsHeaders });
         }
+
+        const url = new URL(request.url);
+        const pathname = url.pathname.replace(/\/$/, "");
+
+        // משיכת כתובת ה-IP של המשתמש (או ברירת מחדל אם לא קיים)
+        const userIp = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
         try {
             let response;
+            
+            // אתחול מערכת האימות (משתמשת במסד הנתונים ובטוקן של ימות שכבר מוגדרים ב-env)
+            const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
+            
+            // ==========================================
+            // נתיבי מערכת האימות (צינתוקים) - משתמש רגיל
+            // ==========================================
+            
+            if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
+                const body = await request.json();
+                if (!body.phone) {
+                    response = Response.json({ error: "חסר מספר טלפון" }, { status: 400 });
+                } else {
+                    const result = await verifySystem.requestVerification(body.phone, userIp, body.intent || 'register');
+                    response = Response.json(result, { status: result.success ? 200 : 400 });
+                }
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/verify/check")) {
+                const body = await request.json();
+                if (!body.sessionId || !body.phone || !body.code) {
+                    response = Response.json({ error: "חסרים פרטי אימות (sessionId, phone, code)" }, { status: 400 });
+                } else {
+                    const result = await verifySystem.verifyCode(body.sessionId, body.phone, userIp, body.code);
+                    response = Response.json(result, { status: result.success ? 200 : 400 });
+                }
+            }
 
-            // נתיבים חדשים לקמפיין ולתרומות
-            if (path === '/campaign/api/info' && request.method === 'GET') {
-                response = await handleCampaignInfo(env);
+            // ==========================================
+            // נתיבי מערכת אימות - ניהול בלבד (Admin)
+            // ==========================================
+            else if (pathname.includes("/api/verify/admin/")) {
+                if (request.method !== "POST") {
+                    response = Response.json({ error: "מתודה לא מורשית" }, { status: 405 });
+                } else {
+                    const body = await request.json();
+                    const adminToken = body.adminToken;
+                    
+                    if (!adminToken) {
+                        response = Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
+                    } else {
+                        const [username, adminPass] = adminToken.split(':');
+                        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
+                        
+                        if (!admin) {
+                            response = Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+                        } else {
+                            // אימות מנהל עבר בהצלחה - ביצוע הפעולה המבוקשת
+                            if (pathname.endsWith("/api/verify/admin/logs")) {
+                                const limit = body.limit || 100;
+                                const offset = body.offset || 0;
+                                response = Response.json(await verifySystem.getLogs(limit, offset));
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/blocks")) {
+                                response = Response.json(await verifySystem.getBlocks());
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/block")) {
+                                // התאמה לקבלת יחידות זמן במקום רק דקות
+                                response = Response.json(await verifySystem.blockTarget(body.type, body.value, body.reason, body.durationValue, body.durationUnit, userIp));
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/unblock")) {
+                                // שימוש ב-target כדי שיוכל למחוק לפי טלפון/IP ולא רק ID
+                                response = Response.json(await verifySystem.unblockTarget(body.target, userIp));
+                            }
+                            else if (pathname.endsWith("/api/verify/admin/clean")) {
+                                response = Response.json(await verifySystem.cleanOldLogs());
+                            } else {
+                                response = Response.json({ error: "נתיב ניהול לא נמצא" }, { status: 404 });
+                            }
+                        }
+                    }
+                }
             }
-            else if (path === '/campaign/api/solicitors' && request.method === 'GET') {
-                response = await handleSolicitorsList(env);
-            }
-            else if (path === '/campaign/api/donation-info' && request.method === 'GET') {
-                response = await handleDonationInfo(env);
-            }
-            // נתיב וובהוק נשאר כרגיל
-            else if (path === '/campaign/api/webhook' && request.method === 'POST') {
-                response = await handleWebhookRequest(request, env);
-            }
-            // נתיבי מתרימים
-            else if (path === '/campaign/api/solicitor/register' && request.method === 'POST') {
+
+            // ==========================================
+            // נתיבי משתמשים רגילים (auth.js) - קיים
+            // ==========================================
+            else if (request.method === "POST" && pathname.endsWith("/api/check-identifier")) {
+                response = await handleCheckIdentifier(request, env);
+            } 
+            else if (request.method === "POST" && pathname.endsWith("/api/register")) {
                 response = await handleRegister(request, env);
-            }
-            else if (path === '/campaign/api/solicitor/login' && request.method === 'POST') {
+            } 
+            else if (request.method === "POST" && pathname.endsWith("/api/login")) {
                 response = await handleLogin(request, env);
+            } 
+            else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
+                response = await handleUpdateProfile(request, env);
             }
-            else if (path === '/campaign/api/solicitor/dashboard' && request.method === 'GET') {
-                response = await handleDashboard(request, env);
+            
+            // ==========================================
+            // נתיבי ניהול (admin.js) - קיים
+            // ==========================================
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) {
+                response = await handleAdminLogin(request, env);
             }
-            else if (path === '/campaign/api/solicitor/update' && request.method === 'POST') {
-                response = await handleUpdateTarget(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/users")) {
+                response = await handleAdminGetUsers(request, env);
             }
-            // --- נתיבים חדשים עבור ימות המשיח ---
-            else if (path === '/campaign/api/yemot/status' && request.method === 'GET') {
-                response = await handleYemotStatus(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/update-user")) {
+                response = await handleAdminUpdateUser(request, env);
             }
-            else if (path === '/campaign/api/yemot/donate' && request.method === 'GET') {
-                response = await handleYemotDonate(request, env);
-            }
-            // --- נתיב תרומות פומביות ---
-            else if (path === '/campaign/api/donations-public' && request.method === 'GET') {
-                response = await handlePublicDonations(request, env);
-            }
+            
+            // ==========================================
+            // נתיב לא נמצא
+            // ==========================================
             else {
-                response = new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+                response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
             }
 
-            return corsResponse(response);
+            // החלת כותרות ה-CORS על כל התשובות
+            const newResponse = new Response(response.body, response);
+            for (let [key, value] of Object.entries(corsHeaders)) {
+                newResponse.headers.set(key, value);
+            }
+            return newResponse;
 
         } catch (error) {
-            console.error("=== קריסת שרת נתפסה בראוטר הראשי ===");
-            console.error("נתיב שניסה לגשת:", path);
-            console.error("הודעת שגיאה:", error.message);
-            console.error("פירוט (Stack):", error.stack);
-
-            return corsResponse(new Response(JSON.stringify({ 
-                status: 'error', 
-                message: 'שגיאת שרת פנימית',
-                details: error.message
-            }), { 
-                status: 500,
-                headers: { 'Content-Type': 'application/json' } 
-            }));
+            return Response.json({ error: error.message }, { 
+                status: 500, 
+                headers: corsHeaders 
+            });
         }
     }
 };
