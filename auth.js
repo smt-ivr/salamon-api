@@ -29,7 +29,7 @@ export async function handleCheckIdentifier(request, env) {
         return Response.json({ 
             isRegistered: false,
             authorized: false, 
-            error: "המספר אינו מורשה במערכת (לא קיים בימות המשיח)." 
+            error: "המספר אינו קיים במערכת." 
         }, { status: 403 });
     }
 
