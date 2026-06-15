@@ -1,18 +1,20 @@
 // messages.js
 
-// 1. קבלת רשימת הקבצים (מסוננת למספרים בלבד)
+// 1. קבלת רשימת הקבצים (הנתיב עכשיו מאובטח ומוגדר בשרת בלבד)
 export async function handleGetMessages(request, env) {
     const body = await request.json();
-    const { userToken, path = 'ivr2:/1/2' } = body; // ברירת מחדל לשלוחה שציינת
+    const { userToken } = body; 
 
-    // אימות משתמש מול המסד
+    // התיקייה קבועה בשרת - אף משתמש לא יכול לשנות אותה מבחוץ!
+    const FOLDER_PATH = 'ivr2:/1/2'; 
+
     if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
     const [identifier, password] = userToken.split(':');
     const user = await env.DB.prepare("SELECT 1 FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
     if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
 
     const token = env.YEMOT_TOKEN;
-    const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(path)}&filesLimit=100`;
+    const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=100`;
     
     try {
         const response = await fetch(url);
@@ -25,21 +27,14 @@ export async function handleGetMessages(request, env) {
         // סינון קבצים: רק קבצי שמע ששמם מורכב מספרות בלבד
         const messages = (data.files || []).filter(file => {
             if (file.fileType !== 'AUDIO') return false;
-            // בודק שהשם מתחיל ומסתיים במספרים בלבד לפני הסיומת
             return /^\d+\.(wav|mp3)$/i.test(file.name);
         }).map(file => {
-            // תיקון הנתיב: נוודא שהוא מתחיל ב-ivr2:/
-            let fullPath = file.path;
-            if (!fullPath.startsWith('ivr2:')) {
-                fullPath = fullPath.startsWith('/') ? `ivr2:${fullPath}` : `ivr2:/${fullPath}`;
-            }
-
+            // שולחים ללקוח רק את הנתונים הנקיים, בלי נתיבים בכלל!
             return {
-                name: file.name,
+                name: file.name, // לדוגמה 3653.wav
                 size: file.size,
                 durationStr: file.durationStr,
-                mtime: file.mtime,
-                path: fullPath
+                mtime: file.mtime
             };
         });
 
@@ -49,15 +44,24 @@ export async function handleGetMessages(request, env) {
     }
 }
 
-// 2. הזרמת הקובץ לנגן (כולל תמיכה מלאה בדילוג - Range Requests)
+// 2. הזרמת הקובץ לנגן (מקבל רק מזהה קובץ במקום נתיב מלא)
 export async function handleStreamMessage(request, env) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
-    let filePath = url.searchParams.get('path'); 
+    const fileId = url.searchParams.get('fileId'); // מקבל רק את המספר, למשל 3653
 
-    if (!userToken || !filePath) {
+    if (!userToken || !fileId) {
         return new Response("חסרים פרמטרים חסויים", { status: 400 });
     }
+
+    // אבטחה חמורה: נוודא שקיבלנו *אך ורק* מספרים! (חוסם ניסיונות פריצה כמו ../../)
+    if (!/^\d+$/.test(fileId)) {
+        return new Response("שגיאה: מזהה קובץ לא חוקי. מותרים מספרים בלבד.", { status: 403 });
+    }
+
+    // השרת מרכיב את הנתיב המלא לבד! הלקוח לא יודע מאיפה זה נמשך.
+    const filePath = `ivr2:/1/2/${fileId}.wav`;
+    const fileName = `${fileId}.wav`;
 
     // אימות משתמש גם בהזרמת הקובץ
     const [identifier, password] = userToken.split(':');
@@ -66,22 +70,10 @@ export async function handleStreamMessage(request, env) {
         return new Response("גישה נדחתה: משתמש לא מורשה", { status: 403 });
     }
 
-    // אבטחה נוספת: מניעת הורדת קבצי מערכת גם אם מישהו מנסה לעקוף את הסינון
-    const fileName = filePath.split('/').pop();
-    if (!/^\d+\.(wav|mp3)$/i.test(fileName)) {
-        return new Response("שגיאה: ניתן להאזין לקבצי הודעות בלבד ולא לקבצי מערכת", { status: 403 });
-    }
-
-    // וידוא אחרון שהנתיב תקין עבור ימות המשיח
-    if (!filePath.startsWith('ivr2:')) {
-        filePath = filePath.startsWith('/') ? `ivr2:${filePath}` : `ivr2:/${filePath}`;
-    }
-
     const token = env.YEMOT_TOKEN;
     const downloadUrl = `https://www.call2all.co.il/ym/api/DownloadFile?token=${token}&path=${encodeURIComponent(filePath)}`;
 
     try {
-        // הכנת הבקשה לימות המשיח - אם הדפדפן מבקש לדלג, אנחנו שואבים את הבקשה ומעבירים הלאה
         const fetchOptions = { headers: {} };
         const rangeHeader = request.headers.get('Range');
         if (rangeHeader) {
@@ -91,7 +83,6 @@ export async function handleStreamMessage(request, env) {
         const response = await fetch(downloadUrl, fetchOptions);
         const contentTypeHeader = response.headers.get('content-type') || '';
         
-        // בדיקת שגיאות מימות המשיח (למקרה של קובץ לא קיים)
         if (contentTypeHeader.includes('text') || contentTypeHeader.includes('json')) {
             const text = await response.text();
             if (text.includes("Requested file does not exist")) {
@@ -104,33 +95,23 @@ export async function handleStreamMessage(request, env) {
             return new Response("שגיאה במשיכת הקובץ מהשרת החיצוני", { status: response.status });
         }
 
-        const ext = fileName.toLowerCase().endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav';
-
-        // בניית כותרות התשובה עבור הדפדפן
+        const ext = 'audio/wav';
         const responseHeaders = new Headers();
         responseHeaders.set('Content-Type', ext);
         responseHeaders.set('Content-Disposition', `inline; filename="${fileName}"`);
-        
-        // הכותרת הכי חשובה: אומרת לנגן בדפדפן "אני תומך בדילוגים!"
         responseHeaders.set('Accept-Ranges', 'bytes');
 
-        // אם ימות המשיח החזירו את גודל הקובץ, אנחנו מעבירים אותו לדפדפן כדי שיידע מה אורך הפס
         const contentLength = response.headers.get('Content-Length');
         if (contentLength) responseHeaders.set('Content-Length', contentLength);
 
-        // אם בוצע דילוג, ימות יחזירו Content-Range - נעביר גם אותו
         const contentRange = response.headers.get('Content-Range');
         if (contentRange) responseHeaders.set('Content-Range', contentRange);
 
-        // אם הדפדפן ביקש חיתוך (Range) וימות אישרו, הסטטוס יהיה 206 (Partial Content). אחרת 200 רגיל.
         const status = response.status === 206 ? 206 : 200;
 
-        return new Response(response.body, {
-            status: status,
-            headers: responseHeaders
-        });
+        return new Response(response.body, { status: status, headers: responseHeaders });
 
     } catch (error) {
-        return new Response("שגיאת שרת פנימית בעת משיכת הקובץ: " + error.message, { status: 500 });
+        return new Response("שגיאת שרת פנימית בעת משיכת הקובץ", { status: 500 });
     }
 }
