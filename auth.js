@@ -1,3 +1,4 @@
+// auth.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 
 // 1. צומת הכוונה חכם - מקבל טלפון או אימייל
@@ -64,7 +65,6 @@ export async function handleRegister(request, env) {
 
     // =========================================================
     // חומת האבטחה (Server-Side Verification Check)
-    // השרת מוודא מול מסד הנתונים שבאמת התבצע צינתוק לאותו מספר והוזן קוד תקין
     // =========================================================
     const session = await env.DB.prepare(
         `SELECT * FROM verification_sessions 
@@ -105,7 +105,7 @@ export async function handleRegister(request, env) {
     }
 }
 
-// 3. התחברות
+// 3. התחברות (מעודכן עם שדה הרשאת העלאה)
 export async function handleLogin(request, env) {
     const { identifier, password } = await request.json();
 
@@ -129,7 +129,8 @@ export async function handleLogin(request, env) {
             phone: user.phone,
             name: name,
             email: user.email,
-            connectedToTzintukim: phoneStatus.active
+            connectedToTzintukim: phoneStatus.active,
+            canUpload: !!user.can_upload // המרה לבוליאני (true/false) בהתאם לעמודה החדשה במסד
         }
     });
 }
