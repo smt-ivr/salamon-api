@@ -4,7 +4,6 @@ import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 export async function handleCheckIdentifier(request, env) {
     const { identifier } = await request.json();
 
-    // שלב א: האם המזהה (טלפון או אימייל) כבר רשום במסד הנתונים?
     const existingUser = await env.DB.prepare("SELECT phone FROM users WHERE phone = ? OR email = ?").bind(identifier, identifier).first();
     
     if (existingUser) {
@@ -15,7 +14,6 @@ export async function handleCheckIdentifier(request, env) {
         });
     }
 
-    // שלב ב: המשתמש לא רשום. אם הוא הזין אימייל, נחזיר שגיאה (פתיחת חשבון מתבצעת רק לפי טלפון)
     if (identifier.includes('@')) {
         return Response.json({
             isRegistered: false,
@@ -24,7 +22,6 @@ export async function handleCheckIdentifier(request, env) {
         }, { status: 404 });
     }
 
-    // שלב ג: המשתמש הזין טלפון ואינו רשום. נבדוק הרשאה מול ימות המשיח.
     const token = env.YEMOT_TOKEN;
     const phoneStatus = await checkPhoneStatus(identifier, token);
     
@@ -36,7 +33,6 @@ export async function handleCheckIdentifier(request, env) {
         }, { status: 403 });
     }
 
-    // שלב ד: המספר מורשה ולא רשום, נשלוף את השם ונפנה להרשמה
     const name = await getNameFromIni(identifier, token);
 
     return Response.json({
@@ -48,18 +44,35 @@ export async function handleCheckIdentifier(request, env) {
     });
 }
 
-// 2. הרשמה
+// 2. הרשמה מאובטחת - עם בדיקת צינתוק מצד השרת!
 export async function handleRegister(request, env) {
-    const { phone, email, password, passwordConfirm } = await request.json();
+    const { phone, email, password, passwordConfirm, sessionId } = await request.json();
 
+    // בדיקת פרטים בסיסית מול מה שהתקבל
     if (!phone || !password || !passwordConfirm) {
         return Response.json({ error: "חסרים פרטי חובה (טלפון וסיסמה)" }, { status: 400 });
+    }
+    if (!sessionId) {
+        return Response.json({ error: "בקשת ההרשמה נדחתה: חובה לאמת את מספר הטלפון בצינתוק לפני הרישום למערכת." }, { status: 403 });
     }
     if (password !== passwordConfirm) {
         return Response.json({ error: "הסיסמאות אינן תואמות" }, { status: 400 });
     }
     if (!/^\d{4,10}$/.test(password)) {
         return Response.json({ error: "הסיסמה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
+    }
+
+    // =========================================================
+    // חומת האבטחה (Server-Side Verification Check)
+    // השרת מוודא מול מסד הנתונים שבאמת התבצע צינתוק לאותו מספר והוזן קוד תקין
+    // =========================================================
+    const session = await env.DB.prepare(
+        `SELECT * FROM verification_sessions 
+         WHERE id = ? AND phone = ? AND status = 'verified' AND intent = 'register'`
+    ).bind(sessionId, phone).first();
+
+    if (!session) {
+        return Response.json({ error: "שגיאת אבטחה: הטלפון לא אומת, תוקף האימות פג, או שהקוד שגוי. יש לבצע צינתוק מחדש." }, { status: 403 });
     }
 
     const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
@@ -76,6 +89,9 @@ export async function handleRegister(request, env) {
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password) VALUES (?, ?, ?)`
         ).bind(phone, email || null, password).run();
+
+        // סימון האימות כ"משומש" כדי שאי אפשר יהיה לעשות בו שימוש חוזר (Replay Attack)
+        await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
 
         const token = `${email || phone}:${password}`;
         
