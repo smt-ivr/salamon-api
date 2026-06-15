@@ -33,7 +33,7 @@ export async function handleUploadMessage(request, env) {
         const token = env.YEMOT_TOKEN;
         const FOLDER_PATH = 'ivr2:/1/2';
 
-        // 1. בניית בקשת Multipart והעלאת קובץ השמע (זהה לחלוטין למה שעבד)
+        // 1. העלאת קובץ השמע 
         const yemotFormData = new FormData();
         yemotFormData.append('token', token);
         yemotFormData.append('path', FOLDER_PATH);
@@ -57,28 +57,58 @@ export async function handleUploadMessage(request, env) {
         }
 
         // ==========================================
-        // שלב 2 החדש: יצירת קובץ ה-TXT המלווה באופן אוטומטי
+        // שלב 2: קריאת ה-TXT הקיים, עדכונו והעלאתו מחדש
         // ==========================================
         let txtSuccess = false;
         let txtDetails = null;
 
         if (data.path) {
-            // המרת הנתיב שהתקבל מימות (לדוגמה ivr/1/2/3654.wav) לפורמט טקסט מלא (ivr2:/1/2/3654.txt)
+            // המרת נתיב מ-WAV ל-TXT (למשל ivr2:/1/2/3654.txt)
             const txtPath = data.path.replace(/^ivr\//, 'ivr2:/').replace(/\.wav$/, '.txt');
             
-            // שליפת שם המשתמש מקובץ ה-INI כדי לעדכן אותו בפנים
+            // 2.1 קריאת קובץ הטקסט הקיים שימות המשיח יצרה עכשיו (עם התאריך, IP וכו')
+            const getTxtUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=${encodeURIComponent(txtPath)}`;
+            let existingText = "";
+            
+            try {
+                const getTxtRes = await fetch(getTxtUrl);
+                if (getTxtRes.ok) {
+                    const getTxtData = await getTxtRes.json();
+                    if (getTxtData.responseStatus === 'OK' && getTxtData.contents) {
+                        existingText = getTxtData.contents;
+                    }
+                }
+            } catch (e) {
+                // נתעלם אם יש בעיה בקריאה, נשתמש בטקסט ריק כגיבוי
+            }
+
+            // 2.2 הכנת פרטי המשתמש והתוספת "(דרך האתר)"
             const userName = await getNameFromIni(user.phone, token);
-            const displayName = userName || "משתמש אתר";
+            // כאן הוספנו את המילים לתוך השם כפי שביקשת
+            const displayName = userName ? `${userName} (דרך האתר)` : `משתמש אתר (דרך האתר)`;
 
-            // בניית מחרוזת התוכן המדויקת שמציינת שזה הועלה מהאתר, ומכילה את הטלפון והשם
-            // הפורמט הזה תואם ב-100% ללוגיקת החילוץ הקיימת ב-messages.js (מפצל לפי Phone- ו-ValName-)
-            const txtContents = `WEB-Phone-${user.phone}-ValName-${displayName}`;
+            // 2.3 בניית הטקסט החדש תוך שמירה על הקיים
+            let finalTxtContents = "";
+            
+            if (existingText) {
+                // מפצלים לשורות (למקרה שיש שורה של title=)
+                const lines = existingText.split('\n');
+                
+                // הוספת הטלפון והשם בסוף השורה הראשונה (שכוללת את התאריך וה-IP)
+                // שימוש בתווית מינוס (-) בתחילת השרשור כדי להפריד מהטקסט של ימות
+                lines[0] = lines[0].trim() + `-Phone-${user.phone}-ValName-${displayName}`;
+                
+                finalTxtContents = lines.join('\n');
+            } else {
+                // מקרה חירום (אם ה-Get נכשל) ניצור מחרוזת בסיסית
+                finalTxtContents = `API-Date-${new Date().toISOString().split('T')[0]}-Phone-${user.phone}-ValName-${displayName}`;
+            }
 
-            // יצירת בקשת FormData ייעודית עבור פקודת UploadTextFile
+            // 2.4 העלאת הטקסט המעודכן חזרה לימות המשיח
             const txtFormData = new FormData();
             txtFormData.append('token', token);
             txtFormData.append('what', txtPath);
-            txtFormData.append('contents', txtContents);
+            txtFormData.append('contents', finalTxtContents);
 
             const txtUrl = 'https://www.call2all.co.il/ym/api/UploadTextFile';
             const txtResponse = await fetch(txtUrl, {
@@ -92,10 +122,10 @@ export async function handleUploadMessage(request, env) {
             }
         }
 
-        // החזרת תשובה משולבת הכוללת את נתוני קובץ האודיו ואישור על יצירת ה-TXT
+        // החזרת התשובה ללקוח
         return Response.json({ 
             success: true, 
-            message: "הקובץ והטקסט המלווה הועלו בהצלחה למערכת הטלפונית", 
+            message: "הקובץ הועלה והטקסט עודכן בהצלחה", 
             yemotResponse: data,
             txtUploaded: txtSuccess,
             txtDetails: txtDetails
