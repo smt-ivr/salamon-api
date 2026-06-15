@@ -14,6 +14,9 @@ import {
 // ייבוא מערכת האימות החדשה
 import { VerificationSystem } from './verification.js';
 
+// ייבוא מודול ההודעות החדש שיצרנו
+import { handleGetMessages, handleStreamMessage } from './messages.js';
+
 export default {
     async fetch(request, env, ctx) {
         const corsHeaders = {
@@ -39,10 +42,19 @@ export default {
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
             // ==========================================
+            // נתיבי מערכת שמע הודעות (חדש)
+            // ==========================================
+            if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
+                response = await handleGetMessages(request, env);
+            }
+            else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) {
+                response = await handleStreamMessage(request, env);
+            }
+
+            // ==========================================
             // נתיבי מערכת האימות (צינתוקים) - משתמש רגיל
             // ==========================================
-            
-            if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
+            else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
                 const body = await request.json();
                 if (!body.phone) {
                     response = Response.json({ error: "חסר מספר טלפון" }, { status: 400 });
@@ -143,7 +155,7 @@ export default {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
             }
 
-            // החלת כותרות ה-CORS על כל התשובות
+            // החלת כותרות ה-CORS על כל התשובות (תומך גם ב-Response רגילים כמו ב-Stream)
             const newResponse = new Response(response.body, response);
             for (let [key, value] of Object.entries(corsHeaders)) {
                 newResponse.headers.set(key, value);
