@@ -28,7 +28,7 @@ export async function handleGetMessages(request, env) {
             // בודק שהשם מתחיל ומסתיים במספרים בלבד לפני הסיומת
             return /^\d+\.(wav|mp3)$/i.test(file.name);
         }).map(file => {
-            // תיקון הנתיב: נוודא שהוא מתחיל ב-ivr2:/ כדי ש-DownloadFile יעבוד!
+            // תיקון הנתיב: נוודא שהוא מתחיל ב-ivr2:/
             let fullPath = file.path;
             if (!fullPath.startsWith('ivr2:')) {
                 fullPath = fullPath.startsWith('/') ? `ivr2:${fullPath}` : `ivr2:/${fullPath}`;
@@ -39,7 +39,7 @@ export async function handleGetMessages(request, env) {
                 size: file.size,
                 durationStr: file.durationStr,
                 mtime: file.mtime,
-                path: fullPath // עכשיו הנתיב יהיה ivr2:/1/2/3653.wav
+                path: fullPath
             };
         });
 
@@ -49,7 +49,7 @@ export async function handleGetMessages(request, env) {
     }
 }
 
-// 2. הזרמת הקובץ לנגן
+// 2. הזרמת הקובץ לנגן (כולל תמיכה מלאה בדילוג - Range Requests)
 export async function handleStreamMessage(request, env) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
@@ -72,7 +72,7 @@ export async function handleStreamMessage(request, env) {
         return new Response("שגיאה: ניתן להאזין לקבצי הודעות בלבד ולא לקבצי מערכת", { status: 403 });
     }
 
-    // וידוא אחרון שהנתיב תקין עבור ימות המשיח לפני הקריאה (גיבוי)
+    // וידוא אחרון שהנתיב תקין עבור ימות המשיח
     if (!filePath.startsWith('ivr2:')) {
         filePath = filePath.startsWith('/') ? `ivr2:${filePath}` : `ivr2:/${filePath}`;
     }
@@ -81,10 +81,17 @@ export async function handleStreamMessage(request, env) {
     const downloadUrl = `https://www.call2all.co.il/ym/api/DownloadFile?token=${token}&path=${encodeURIComponent(filePath)}`;
 
     try {
-        const response = await fetch(downloadUrl);
+        // הכנת הבקשה לימות המשיח - אם הדפדפן מבקש לדלג, אנחנו שואבים את הבקשה ומעבירים הלאה
+        const fetchOptions = { headers: {} };
+        const rangeHeader = request.headers.get('Range');
+        if (rangeHeader) {
+            fetchOptions.headers['Range'] = rangeHeader;
+        }
+
+        const response = await fetch(downloadUrl, fetchOptions);
         const contentTypeHeader = response.headers.get('content-type') || '';
         
-        // בדיקת שגיאות מימות המשיח
+        // בדיקת שגיאות מימות המשיח (למקרה של קובץ לא קיים)
         if (contentTypeHeader.includes('text') || contentTypeHeader.includes('json')) {
             const text = await response.text();
             if (text.includes("Requested file does not exist")) {
@@ -99,11 +106,28 @@ export async function handleStreamMessage(request, env) {
 
         const ext = fileName.toLowerCase().endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav';
 
+        // בניית כותרות התשובה עבור הדפדפן
+        const responseHeaders = new Headers();
+        responseHeaders.set('Content-Type', ext);
+        responseHeaders.set('Content-Disposition', `inline; filename="${fileName}"`);
+        
+        // הכותרת הכי חשובה: אומרת לנגן בדפדפן "אני תומך בדילוגים!"
+        responseHeaders.set('Accept-Ranges', 'bytes');
+
+        // אם ימות המשיח החזירו את גודל הקובץ, אנחנו מעבירים אותו לדפדפן כדי שיידע מה אורך הפס
+        const contentLength = response.headers.get('Content-Length');
+        if (contentLength) responseHeaders.set('Content-Length', contentLength);
+
+        // אם בוצע דילוג, ימות יחזירו Content-Range - נעביר גם אותו
+        const contentRange = response.headers.get('Content-Range');
+        if (contentRange) responseHeaders.set('Content-Range', contentRange);
+
+        // אם הדפדפן ביקש חיתוך (Range) וימות אישרו, הסטטוס יהיה 206 (Partial Content). אחרת 200 רגיל.
+        const status = response.status === 206 ? 206 : 200;
+
         return new Response(response.body, {
-            headers: {
-                'Content-Type': ext,
-                'Content-Disposition': `inline; filename="${fileName}"`
-            }
+            status: status,
+            headers: responseHeaders
         });
 
     } catch (error) {
