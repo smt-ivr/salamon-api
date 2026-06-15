@@ -49,7 +49,6 @@ export async function handleCheckIdentifier(request, env) {
 export async function handleRegister(request, env) {
     const { phone, email, password, passwordConfirm, sessionId } = await request.json();
 
-    // בדיקת פרטים בסיסית מול מה שהתקבל
     if (!phone || !password || !passwordConfirm) {
         return Response.json({ error: "חסרים פרטי חובה (טלפון וסיסמה)" }, { status: 400 });
     }
@@ -63,9 +62,6 @@ export async function handleRegister(request, env) {
         return Response.json({ error: "הסיסמה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
     }
 
-    // =========================================================
-    // חומת האבטחה (Server-Side Verification Check)
-    // =========================================================
     const session = await env.DB.prepare(
         `SELECT * FROM verification_sessions 
          WHERE id = ? AND phone = ? AND status = 'verified' AND intent = 'register'`
@@ -86,11 +82,11 @@ export async function handleRegister(request, env) {
     }
 
     try {
+        // שינוי כאן: הגדרת ברירת המחדל בהרשמה -> can_record=1 (פתוח), can_upload=0 (סגור)
         await env.DB.prepare(
-            `INSERT INTO users (phone, email, password) VALUES (?, ?, ?)`
+            `INSERT INTO users (phone, email, password, can_record, can_upload) VALUES (?, ?, ?, 1, 0)`
         ).bind(phone, email || null, password).run();
 
-        // סימון האימות כ"משומש" כדי שאי אפשר יהיה לעשות בו שימוש חוזר (Replay Attack)
         await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
 
         const token = `${email || phone}:${password}`;
@@ -105,7 +101,7 @@ export async function handleRegister(request, env) {
     }
 }
 
-// 3. התחברות (מעודכן עם שדה הרשאת העלאה)
+// 3. התחברות (מעודכן עם 2 ההרשאות)
 export async function handleLogin(request, env) {
     const { identifier, password } = await request.json();
 
@@ -130,7 +126,8 @@ export async function handleLogin(request, env) {
             name: name,
             email: user.email,
             connectedToTzintukim: phoneStatus.active,
-            canUpload: !!user.can_upload // המרה לבוליאני (true/false) בהתאם לעמודה החדשה במסד
+            canUpload: !!user.can_upload,
+            canRecord: user.can_record !== 0 // אם זה NULL מהעבר זה ייחשב כפתוח
         }
     });
 }
