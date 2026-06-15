@@ -9,7 +9,9 @@ export async function handleGetMessages(request, env) {
 
     if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
     const [identifier, password] = userToken.split(':');
-    const user = await env.DB.prepare("SELECT 1 FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
+    
+    // שינוי: שולפים את ה-phone מהמסד כדי שיהיה זמין לנו להשוואה בהמשך
+    const user = await env.DB.prepare("SELECT phone FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
     if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
 
     const token = env.YEMOT_TOKEN;
@@ -37,18 +39,25 @@ export async function handleGetMessages(request, env) {
             const txtUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=${encodeURIComponent(FOLDER_PATH + '/' + fileId + '.txt')}`;
             
             let recorderName = "";
+            let recorderPhone = ""; // משתנה חדש לשמירת מספר הטלפון של ההודעה מה-TXT
 
             try {
                 const txtRes = await fetch(txtUrl);
                 if (txtRes.ok) {
                     const txtData = await txtRes.json();
                     if (txtData.responseStatus === 'OK' && txtData.contents) {
-                        // חילוץ השם מתוך הטקסט
+                        
+                        // חילוץ מספר הטלפון מתוך הטקסט לצורך בדיקת הבעלות
+                        if (txtData.contents.includes('Phone-')) {
+                            recorderPhone = txtData.contents.split('Phone-')[1].split('-')[0].trim();
+                        }
+
+                        // חילוץ השם מתוך הטקסט (נשאר בדיוק לפי הלוגיקה המקורית שלך)
                         if (txtData.contents.includes('ValName-')) {
                             recorderName = txtData.contents.split('ValName-')[1].trim();
-                        } else if (txtData.contents.includes('Phone-')) {
+                        } else if (recorderPhone) {
                             // אם אין שם, ניקח את הטלפון כגיבוי
-                            recorderName = txtData.contents.split('Phone-')[1].split('-')[0].trim();
+                            recorderName = recorderPhone;
                         }
                     }
                 }
@@ -56,12 +65,16 @@ export async function handleGetMessages(request, env) {
                 // מתעלמים משגיאות בקובץ הטקסט כדי לא להרוס את השמעת הקובץ עצמו
             }
 
+            // בדיקה האם ההודעה שייכת למשתמש הנוכחי שמבצע את הבקשה
+            const isOutgoing = !!(user.phone && (recorderPhone === user.phone || file.phone === user.phone));
+
             return {
                 name: file.name, 
                 size: file.size,
                 durationStr: file.durationStr,
                 mtime: file.mtime,
-                valName: recorderName || file.phone || "מערכת / לא מזוהה" // שם המקליט שהוצאנו
+                valName: recorderName || file.phone || "מערכת / לא מזוהה", // שם המקליט שהוצאנו
+                isOutgoing: isOutgoing // הפרמטר החדש שביקשת
             };
         }));
 
