@@ -6,7 +6,7 @@ export async function handleUploadMessage(request, env) {
         // קבלת ה-FormData שנשלח מהדפדפן
         const formData = await request.formData();
         const userToken = formData.get('userToken');
-        const file = formData.get('file'); // קובץ האודיו מהמיקרופון
+        const file = formData.get('file'); // קובץ האודיו מהמיקרופון/מחשב
 
         if (!userToken) {
             return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
@@ -33,7 +33,9 @@ export async function handleUploadMessage(request, env) {
         const token = env.YEMOT_TOKEN;
         const FOLDER_PATH = 'ivr2:/1/2';
 
+        // ==========================================
         // 1. העלאת קובץ השמע 
+        // ==========================================
         const yemotFormData = new FormData();
         yemotFormData.append('token', token);
         yemotFormData.append('path', FOLDER_PATH);
@@ -57,7 +59,7 @@ export async function handleUploadMessage(request, env) {
         }
 
         // ==========================================
-        // שלב 2: קריאת ה-TXT הקיים, עדכונו והעלאתו מחדש
+        // שלב 2: קריאת ה-TXT הקיים, ניקויו והעלאתו מחדש
         // ==========================================
         let txtSuccess = false;
         let txtDetails = null;
@@ -66,7 +68,7 @@ export async function handleUploadMessage(request, env) {
             // המרת נתיב מ-WAV ל-TXT (למשל ivr2:/1/2/3654.txt)
             const txtPath = data.path.replace(/^ivr\//, 'ivr2:/').replace(/\.wav$/, '.txt');
             
-            // 2.1 קריאת קובץ הטקסט הקיים שימות המשיח יצרה עכשיו (עם התאריך, IP וכו')
+            // 2.1 קריאת קובץ הטקסט הקיים שימות המשיח יצרה עכשיו (עם התאריך, IP וה-title)
             const getTxtUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=${encodeURIComponent(txtPath)}`;
             let existingText = "";
             
@@ -79,28 +81,25 @@ export async function handleUploadMessage(request, env) {
                     }
                 }
             } catch (e) {
-                // נתעלם אם יש בעיה בקריאה, נשתמש בטקסט ריק כגיבוי
+                // נתעלם במקרה של שגיאה בקריאה
             }
 
             // 2.2 הכנת פרטי המשתמש והתוספת "(דרך האתר)"
             const userName = await getNameFromIni(user.phone, token);
-            // כאן הוספנו את המילים לתוך השם כפי שביקשת
             const displayName = userName ? `${userName} (דרך האתר)` : `משתמש אתר (דרך האתר)`;
 
-            // 2.3 בניית הטקסט החדש תוך שמירה על הקיים
+            // 2.3 בניית הטקסט החדש תוך זריקת שורת ה-title והוספת הפרטים לשורה הראשונה
             let finalTxtContents = "";
             
             if (existingText) {
-                // מפצלים לשורות (למקרה שיש שורה של title=)
+                // מפצלים לשורות
                 const lines = existingText.split('\n');
                 
-                // הוספת הטלפון והשם בסוף השורה הראשונה (שכוללת את התאריך וה-IP)
-                // שימוש בתווית מינוס (-) בתחילת השרשור כדי להפריד מהטקסט של ימות
-                lines[0] = lines[0].trim() + `-Phone-${user.phone}-ValName-${displayName}`;
-                
-                finalTxtContents = lines.join('\n');
+                // לוקחים *רק* את השורה הראשונה (מתעלמים משאר השורות כמו title=)
+                // ומוסיפים בסופה את הטלפון והשם עם מינוס מפריד
+                finalTxtContents = lines[0].trim() + `-Phone-${user.phone}-ValName-${displayName}`;
             } else {
-                // מקרה חירום (אם ה-Get נכשל) ניצור מחרוזת בסיסית
+                // מקרה חירום (אם ה-Get נכשל) ניצור מחרוזת בסיסית תקנית
                 finalTxtContents = `API-Date-${new Date().toISOString().split('T')[0]}-Phone-${user.phone}-ValName-${displayName}`;
             }
 
@@ -122,7 +121,7 @@ export async function handleUploadMessage(request, env) {
             }
         }
 
-        // החזרת התשובה ללקוח
+        // החזרת התשובה הסופית ללקוח
         return Response.json({ 
             success: true, 
             message: "הקובץ הועלה והטקסט עודכן בהצלחה", 
