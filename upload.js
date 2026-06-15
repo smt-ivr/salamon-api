@@ -1,4 +1,5 @@
 // upload.js
+import { getNameFromIni } from './yemot.js';
 
 export async function handleUploadMessage(request, env) {
     try {
@@ -24,7 +25,7 @@ export async function handleUploadMessage(request, env) {
             return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
         }
 
-        // בדיקת ההרשאה המיוחדת שביקשת
+        // בדיקת ההרשאה המיוחדת
         if (!user.can_upload) {
             return Response.json({ error: "אין לחשבון זה הרשאה להעלות הודעות במערכת" }, { status: 403 });
         }
@@ -32,7 +33,7 @@ export async function handleUploadMessage(request, env) {
         const token = env.YEMOT_TOKEN;
         const FOLDER_PATH = 'ivr2:/1/2';
 
-        // בניית בקשת Multipart חדשה עבור ימות המשיח בדיוק לפי הדרישות שלך
+        // 1. בניית בקשת Multipart והעלאת קובץ השמע (זהה לחלוטין למה שעבד)
         const yemotFormData = new FormData();
         yemotFormData.append('token', token);
         yemotFormData.append('path', FOLDER_PATH);
@@ -40,9 +41,8 @@ export async function handleUploadMessage(request, env) {
         yemotFormData.append('autoNumbering', '1');
         yemotFormData.append('file', file);
 
-        // פנייה ב-HTTP POST אל השרתים של ימות המשיח
-        const url = 'https://www.call2all.co.il/ym/api/UploadFile';
-        const yemotResponse = await fetch(url, {
+        const uploadUrl = 'https://www.call2all.co.il/ym/api/UploadFile';
+        const yemotResponse = await fetch(uploadUrl, {
             method: 'POST',
             body: yemotFormData
         });
@@ -56,16 +56,54 @@ export async function handleUploadMessage(request, env) {
             }, { status: 400 });
         }
 
-        // החזרת תשובה חיובית עם הפרטים שנתקבלו מימות (כמו שם הקובץ שנוצר אוטומטית)
+        // ==========================================
+        // שלב 2 החדש: יצירת קובץ ה-TXT המלווה באופן אוטומטי
+        // ==========================================
+        let txtSuccess = false;
+        let txtDetails = null;
+
+        if (data.path) {
+            // המרת הנתיב שהתקבל מימות (לדוגמה ivr/1/2/3654.wav) לפורמט טקסט מלא (ivr2:/1/2/3654.txt)
+            const txtPath = data.path.replace(/^ivr\//, 'ivr2:/').replace(/\.wav$/, '.txt');
+            
+            // שליפת שם המשתמש מקובץ ה-INI כדי לעדכן אותו בפנים
+            const userName = await getNameFromIni(user.phone, token);
+            const displayName = userName || "משתמש אתר";
+
+            // בניית מחרוזת התוכן המדויקת שמציינת שזה הועלה מהאתר, ומכילה את הטלפון והשם
+            // הפורמט הזה תואם ב-100% ללוגיקת החילוץ הקיימת ב-messages.js (מפצל לפי Phone- ו-ValName-)
+            const txtContents = `WEB-Phone-${user.phone}-ValName-${displayName}`;
+
+            // יצירת בקשת FormData ייעודית עבור פקודת UploadTextFile
+            const txtFormData = new FormData();
+            txtFormData.append('token', token);
+            txtFormData.append('what', txtPath);
+            txtFormData.append('contents', txtContents);
+
+            const txtUrl = 'https://www.call2all.co.il/ym/api/UploadTextFile';
+            const txtResponse = await fetch(txtUrl, {
+                method: 'POST',
+                body: txtFormData
+            });
+
+            txtDetails = await txtResponse.json();
+            if (txtDetails.responseStatus === 'OK') {
+                txtSuccess = true;
+            }
+        }
+
+        // החזרת תשובה משולבת הכוללת את נתוני קובץ האודיו ואישור על יצירת ה-TXT
         return Response.json({ 
             success: true, 
-            message: "הקובץ הועלה בהצלחה למערכת הטלפונית", 
-            yemotResponse: data 
+            message: "הקובץ והטקסט המלווה הועלו בהצלחה למערכת הטלפונית", 
+            yemotResponse: data,
+            txtUploaded: txtSuccess,
+            txtDetails: txtDetails
         });
 
     } catch (error) {
         return Response.json({ 
-            error: "שגיאת שרת פנימית בעת ניסיון העלאת הקובץ", 
+            error: "שגיאת שרת פנימית בעת ניסיון העלאת הקובץ והטקסט", 
             details: error.message 
         }, { status: 500 });
     }
