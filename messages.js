@@ -1,11 +1,10 @@
 // messages.js
 
-// 1. קבלת רשימת הקבצים (הנתיב עכשיו מאובטח ומוגדר בשרת בלבד)
+// 1. קבלת רשימת הקבצים + שליפת שם המקליט מתוך קובץ ה-TXT
 export async function handleGetMessages(request, env) {
     const body = await request.json();
     const { userToken } = body; 
 
-    // התיקייה קבועה בשרת - אף משתמש לא יכול לשנות אותה מבחוץ!
     const FOLDER_PATH = 'ivr2:/1/2'; 
 
     if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
@@ -14,7 +13,9 @@ export async function handleGetMessages(request, env) {
     if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
 
     const token = env.YEMOT_TOKEN;
-    const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=100`;
+    
+    // הגבלנו ל-40 כדי לא לחרוג ממגבלת ה-50 בקשות של Cloudflare שעלולה לרסק את השרת
+    const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=40`;
     
     try {
         const response = await fetch(url);
@@ -25,18 +26,44 @@ export async function handleGetMessages(request, env) {
         }
 
         // סינון קבצים: רק קבצי שמע ששמם מורכב מספרות בלבד
-        const messages = (data.files || []).filter(file => {
+        const rawMessages = (data.files || []).filter(file => {
             if (file.fileType !== 'AUDIO') return false;
             return /^\d+\.(wav|mp3)$/i.test(file.name);
-        }).map(file => {
-            // שולחים ללקוח רק את הנתונים הנקיים, בלי נתיבים בכלל!
+        });
+
+        // מעבר על כל קובץ שמע ושליפת קובץ ה-TXT שלו (במקביל, לחיסכון בזמן)
+        const messages = await Promise.all(rawMessages.map(async (file) => {
+            const fileId = file.name.split('.')[0]; // שליפת המספר בלבד
+            const txtUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=${encodeURIComponent(FOLDER_PATH + '/' + fileId + '.txt')}`;
+            
+            let recorderName = "";
+
+            try {
+                const txtRes = await fetch(txtUrl);
+                if (txtRes.ok) {
+                    const txtData = await txtRes.json();
+                    if (txtData.responseStatus === 'OK' && txtData.contents) {
+                        // חילוץ השם מתוך הטקסט
+                        if (txtData.contents.includes('ValName-')) {
+                            recorderName = txtData.contents.split('ValName-')[1].trim();
+                        } else if (txtData.contents.includes('Phone-')) {
+                            // אם אין שם, ניקח את הטלפון כגיבוי
+                            recorderName = txtData.contents.split('Phone-')[1].split('-')[0].trim();
+                        }
+                    }
+                }
+            } catch (e) {
+                // מתעלמים משגיאות בקובץ הטקסט כדי לא להרוס את השמעת הקובץ עצמו
+            }
+
             return {
-                name: file.name, // לדוגמה 3653.wav
+                name: file.name, 
                 size: file.size,
                 durationStr: file.durationStr,
-                mtime: file.mtime
+                mtime: file.mtime,
+                valName: recorderName || file.phone || "מערכת / לא מזוהה" // שם המקליט שהוצאנו
             };
-        });
+        }));
 
         return Response.json({ success: true, messages });
     } catch (error) {
@@ -44,26 +71,23 @@ export async function handleGetMessages(request, env) {
     }
 }
 
-// 2. הזרמת הקובץ לנגן (מקבל רק מזהה קובץ במקום נתיב מלא)
+// 2. הזרמת הקובץ לנגן (תומך דילוג - Range, מאובטח מפני IDOR)
 export async function handleStreamMessage(request, env) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
-    const fileId = url.searchParams.get('fileId'); // מקבל רק את המספר, למשל 3653
+    const fileId = url.searchParams.get('fileId'); 
 
     if (!userToken || !fileId) {
         return new Response("חסרים פרמטרים חסויים", { status: 400 });
     }
 
-    // אבטחה חמורה: נוודא שקיבלנו *אך ורק* מספרים! (חוסם ניסיונות פריצה כמו ../../)
     if (!/^\d+$/.test(fileId)) {
         return new Response("שגיאה: מזהה קובץ לא חוקי. מותרים מספרים בלבד.", { status: 403 });
     }
 
-    // השרת מרכיב את הנתיב המלא לבד! הלקוח לא יודע מאיפה זה נמשך.
     const filePath = `ivr2:/1/2/${fileId}.wav`;
     const fileName = `${fileId}.wav`;
 
-    // אימות משתמש גם בהזרמת הקובץ
     const [identifier, password] = userToken.split(':');
     const user = await env.DB.prepare("SELECT 1 FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
     if (!user) {
