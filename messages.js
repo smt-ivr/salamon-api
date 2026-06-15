@@ -3,7 +3,7 @@
 // 1. קבלת רשימת הקבצים (מסוננת למספרים בלבד)
 export async function handleGetMessages(request, env) {
     const body = await request.json();
-    const { userToken, path = 'ivr2:/1/2' } = body; // ברירת מחדל לשלוחה שציינת, ניתן לשנות מהלקוח
+    const { userToken, path = 'ivr2:/1/2' } = body; // ברירת מחדל לשלוחה שציינת
 
     // אימות משתמש מול המסד
     if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
@@ -22,18 +22,26 @@ export async function handleGetMessages(request, env) {
             return Response.json({ error: "שגיאה בקבלת נתונים מימות המשיח" }, { status: 400 });
         }
 
-        // סינון קבצים: רק קבצי שמע ששמם מורכב מספרות בלבד (ללא חלקי שם כמו M1452)
+        // סינון קבצים: רק קבצי שמע ששמם מורכב מספרות בלבד
         const messages = (data.files || []).filter(file => {
             if (file.fileType !== 'AUDIO') return false;
-            // ביטוי רגולרי: בודק שהשם מתחיל ומסתיים במספרים בלבד לפני הסיומת
+            // בודק שהשם מתחיל ומסתיים במספרים בלבד לפני הסיומת
             return /^\d+\.(wav|mp3)$/i.test(file.name);
-        }).map(file => ({
-            name: file.name,
-            size: file.size,
-            durationStr: file.durationStr,
-            mtime: file.mtime,
-            path: file.path
-        }));
+        }).map(file => {
+            // תיקון הנתיב: נוודא שהוא מתחיל ב-ivr2:/ כדי ש-DownloadFile יעבוד!
+            let fullPath = file.path;
+            if (!fullPath.startsWith('ivr2:')) {
+                fullPath = fullPath.startsWith('/') ? `ivr2:${fullPath}` : `ivr2:/${fullPath}`;
+            }
+
+            return {
+                name: file.name,
+                size: file.size,
+                durationStr: file.durationStr,
+                mtime: file.mtime,
+                path: fullPath // עכשיו הנתיב יהיה ivr2:/1/2/3653.wav
+            };
+        });
 
         return Response.json({ success: true, messages });
     } catch (error) {
@@ -41,11 +49,11 @@ export async function handleGetMessages(request, env) {
     }
 }
 
-// 2. הזרמת הקובץ לנגן (כולל טיפול בשגיאת "קובץ לא קיים")
+// 2. הזרמת הקובץ לנגן
 export async function handleStreamMessage(request, env) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
-    const filePath = url.searchParams.get('path'); // לדוגמה ivr2:/1/2/3652.wav
+    let filePath = url.searchParams.get('path'); 
 
     if (!userToken || !filePath) {
         return new Response("חסרים פרמטרים חסויים", { status: 400 });
@@ -58,10 +66,15 @@ export async function handleStreamMessage(request, env) {
         return new Response("גישה נדחתה: משתמש לא מורשה", { status: 403 });
     }
 
-    // אבטחה נוספת: מניעת הורדת קבצי מערכת גם אם מישהו מנסה לעקוף את הסינון בנתיב
+    // אבטחה נוספת: מניעת הורדת קבצי מערכת גם אם מישהו מנסה לעקוף את הסינון
     const fileName = filePath.split('/').pop();
     if (!/^\d+\.(wav|mp3)$/i.test(fileName)) {
         return new Response("שגיאה: ניתן להאזין לקבצי הודעות בלבד ולא לקבצי מערכת", { status: 403 });
+    }
+
+    // וידוא אחרון שהנתיב תקין עבור ימות המשיח לפני הקריאה (גיבוי)
+    if (!filePath.startsWith('ivr2:')) {
+        filePath = filePath.startsWith('/') ? `ivr2:${filePath}` : `ivr2:/${filePath}`;
     }
 
     const token = env.YEMOT_TOKEN;
@@ -71,8 +84,7 @@ export async function handleStreamMessage(request, env) {
         const response = await fetch(downloadUrl);
         const contentTypeHeader = response.headers.get('content-type') || '';
         
-        // ימות המשיח לפעמים מחזירים שגיאה בטקסט רגיל במקום קובץ (אפילו עם קוד 200)
-        // אם ה-Content-Type הוא לא אודיו אלא טקסט, נבדוק את התוכן
+        // בדיקת שגיאות מימות המשיח
         if (contentTypeHeader.includes('text') || contentTypeHeader.includes('json')) {
             const text = await response.text();
             if (text.includes("Requested file does not exist")) {
