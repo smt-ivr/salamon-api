@@ -1,3 +1,5 @@
+// worker.js
+
 import { 
     handleCheckIdentifier, 
     handleRegister, 
@@ -16,6 +18,9 @@ import { VerificationSystem } from './verification.js';
 
 // ייבוא מודול ההודעות החדש שיצרנו
 import { handleGetMessages, handleStreamMessage } from './messages.js';
+
+// ייבוא מודול העלאת קבצים החדש (קובץ נפרד)
+import { handleUploadMessage } from './upload.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -42,10 +47,13 @@ export default {
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
             // ==========================================
-            // נתיבי מערכת שמע הודעות (חדש)
+            // נתיבי מערכת שמע הודעות (חדש + העלאה)
             // ==========================================
             if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
                 response = await handleGetMessages(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/messages/upload")) {
+                response = await handleUploadMessage(request, env);
             }
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) {
                 response = await handleStreamMessage(request, env);
@@ -102,11 +110,9 @@ export default {
                                 response = Response.json(await verifySystem.getBlocks());
                             }
                             else if (pathname.endsWith("/api/verify/admin/block")) {
-                                // התאמה לקבלת יחידות זמן במקום רק דקות
                                 response = Response.json(await verifySystem.blockTarget(body.type, body.value, body.reason, body.durationValue, body.durationUnit, userIp));
                             }
                             else if (pathname.endsWith("/api/verify/admin/unblock")) {
-                                // שימוש ב-target כדי שיוכל למחוק לפי טלפון/IP ולא רק ID
                                 response = Response.json(await verifySystem.unblockTarget(body.target, userIp));
                             }
                             else if (pathname.endsWith("/api/verify/admin/clean")) {
