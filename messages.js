@@ -84,7 +84,7 @@ export async function handleGetMessages(request, env) {
     }
 }
 
-// 2. הזרמת הקובץ לנגן (תומך דילוג - Range, מאובטח מפני IDOR)
+// 2. הזרמת הקובץ לנגן - תמיכה מלאה באייפון ובקבצים גדולים ללא חריגת זיכרון (Streaming Range)
 export async function handleStreamMessage(request, env) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
@@ -111,13 +111,7 @@ export async function handleStreamMessage(request, env) {
     const downloadUrl = `https://www.call2all.co.il/ym/api/DownloadFile?token=${token}&path=${encodeURIComponent(filePath)}`;
 
     try {
-        const fetchOptions = { headers: {} };
-        const rangeHeader = request.headers.get('Range');
-        if (rangeHeader) {
-            fetchOptions.headers['Range'] = rangeHeader;
-        }
-
-        const response = await fetch(downloadUrl, fetchOptions);
+        const response = await fetch(downloadUrl);
         const contentTypeHeader = response.headers.get('content-type') || '';
         
         if (contentTypeHeader.includes('text') || contentTypeHeader.includes('json')) {
@@ -128,27 +122,82 @@ export async function handleStreamMessage(request, env) {
             return new Response("שגיאה ממערכת התקשורת: " + text, { status: 400 });
         }
 
-        if (!response.ok) {
+        if (!response.ok || !response.body) {
             return new Response("שגיאה במשיכת הקובץ מהשרת החיצוני", { status: response.status });
         }
 
-        const ext = 'audio/wav';
+        const totalLength = parseInt(response.headers.get('Content-Length') || '0', 10);
+        const rangeHeader = request.headers.get('Range');
+        
+        let start = 0;
+        let end = totalLength - 1;
+        let isRangeRequest = false;
+
+        if (rangeHeader && totalLength > 0) {
+            const parts = rangeHeader.replace(/bytes=/, "").split("-");
+            start = parseInt(parts[0], 10);
+            if (parts[1]) {
+                end = parseInt(parts[1], 10);
+            }
+            isRangeRequest = true;
+
+            if (start >= totalLength || end >= totalLength || start > end) {
+                return new Response("Requested Range Not Satisfiable", {
+                    status: 416,
+                    headers: { "Content-Range": `bytes */${totalLength}` }
+                });
+            }
+        }
+
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const reader = response.body.getReader();
+
+        (async () => {
+            let bytesRead = 0;
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunkStart = bytesRead;
+                    const chunkEnd = bytesRead + value.length - 1;
+                    bytesRead += value.length;
+
+                    if (chunkEnd >= start && chunkStart <= end) {
+                        const sliceStart = Math.max(0, start - chunkStart);
+                        const sliceEnd = Math.min(value.length, end - chunkStart + 1);
+                        await writer.write(value.subarray(sliceStart, sliceEnd));
+                    }
+
+                    if (bytesRead > end) {
+                        await reader.cancel(); 
+                        break;
+                    }
+                }
+            } catch (err) {
+                console.error("Streaming pump error:", err);
+            } finally {
+                await writer.close();
+            }
+        })();
+
         const responseHeaders = new Headers();
-        responseHeaders.set('Content-Type', ext);
+        responseHeaders.set('Content-Type', 'audio/wav');
         responseHeaders.set('Content-Disposition', `inline; filename="${fileName}"`);
         responseHeaders.set('Accept-Ranges', 'bytes');
 
-        const contentLength = response.headers.get('Content-Length');
-        if (contentLength) responseHeaders.set('Content-Length', contentLength);
-
-        const contentRange = response.headers.get('Content-Range');
-        if (contentRange) responseHeaders.set('Content-Range', contentRange);
-
-        const status = response.status === 206 ? 206 : 200;
-
-        return new Response(response.body, { status: status, headers: responseHeaders });
+        if (isRangeRequest) {
+            responseHeaders.set('Content-Range', `bytes ${start}-${end}/${totalLength}`);
+            responseHeaders.set('Content-Length', (end - start + 1).toString());
+            return new Response(readable, { status: 206, headers: responseHeaders });
+        } else {
+            if (totalLength > 0) responseHeaders.set('Content-Length', totalLength.toString());
+            return new Response(readable, { status: 200, headers: responseHeaders });
+        }
 
     } catch (error) {
-        return new Response("שגיאת שרת פנימית בעת משיכת הקובץ", { status: 500 });
+        console.error(error);
+        return new Response("שגיאת שרת פנימית בעת עיבוד הקובץ", { status: 500 });
     }
 }
