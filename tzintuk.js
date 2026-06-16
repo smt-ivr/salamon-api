@@ -50,7 +50,7 @@ export async function processTzintukRequest(env, phone, yemotToken) {
     const nowMs = getNowMs();
     const currentTimeForDB = getIsraelTimeForDB();
 
-    // 1. בדיקת הרשאה מתוך טבלת המשתמשים הראשית (הכי נקי ופשוט!)
+    // 1. בדיקת הרשאה מתוך טבלת המשתמשים הראשית
     const user = await db.prepare(
         `SELECT can_tzintuk FROM users WHERE phone = ?`
     ).bind(phone).first();
