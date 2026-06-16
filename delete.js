@@ -1,8 +1,8 @@
 // delete.js
-import { getMinutesSinceIsraelDbTime } from './timeUtils.js';
+import { getMinutesSinceIsraelDbTime, getIsraelTimeForDB } from './timeUtils.js';
 
 const DELETE_WINDOW_HOURS = 12; // מותר למחוק רק עד 12 שעות מההעלאה
-const FOLDER_PATH = 'ivr2:/1/2'; // הנתיב הקבוע, למניעת מחיקת תיקיות אחרות בטעות
+const FOLDER_PATH = 'ivr2:/1/2'; // הנתיב הקבוע של ההודעות
 
 /**
  * פונקציה פנימית משותפת שבודקת אם המשתמש רשאי למחוק את הקובץ הספציפי
@@ -27,7 +27,7 @@ async function checkEligibility(db, phone, fileName) {
         return { allowed: false, message: "לא ניתן למחוק הודעה שכבר נשלח עליה צינתוק למנויים." };
     }
 
-    // 4. עברו יותר מ-12 שעות?
+    // 4. האם עברו יותר מ-12 שעות?
     const minutesPassed = getMinutesSinceIsraelDbTime(uploadRecord.upload_time);
     if (minutesPassed > (DELETE_WINDOW_HOURS * 60) || minutesPassed < 0) {
         return { allowed: false, message: `עבר הזמן המותר למחיקה (מעל ${DELETE_WINDOW_HOURS} שעות).` };
@@ -37,7 +37,7 @@ async function checkEligibility(db, phone, fileName) {
 }
 
 /**
- * בקשה 1: רק בודק אם מותר למחוק (לפני הקפצת ה"האם אתה בטוח")
+ * קריאה 1: בודק אם מותר למחוק (לפני הקפצת האזהרה בדפדפן)
  */
 export async function handleCheckDeleteEligibility(request, env) {
     const body = await request.json();
@@ -54,9 +54,10 @@ export async function handleCheckDeleteEligibility(request, env) {
 }
 
 /**
- * בקשה 2: מחיקה בפועל
+ * קריאה 2: מחיקה בפועל ורישום לוג
+ * שים לב שהוספנו את המשתנה userIp לפונקציה
  */
-export async function handleDeleteMessage(request, env) {
+export async function handleDeleteMessage(request, env, userIp) {
     const body = await request.json();
     const userToken = body.userToken;
     const fileName = body.fileName;
@@ -66,7 +67,7 @@ export async function handleDeleteMessage(request, env) {
     
     if (!user) return Response.json({ success: false, message: "אימות נכשל" }, { status: 403 });
 
-    // מוודאים שוב לפני ביצוע אמיתי
+    // בדיקה סופית לפני ביצוע
     const eligibility = await checkEligibility(env.DB, user.phone, fileName);
     if (!eligibility.allowed) {
         return Response.json({ success: false, message: eligibility.message });
@@ -81,8 +82,13 @@ export async function handleDeleteMessage(request, env) {
         const data = await res.json();
 
         if (data.responseStatus === "OK" && data.success) {
-            // מוחקים מהטבלה כדי שזה לא יתפוס מקום ולא יפריע (או פשוט מעדכנים סטטוס, אבל מחיקה עדיף)
-            await env.DB.prepare(`DELETE FROM upload_events WHERE phone = ? AND file_name = ?`).bind(user.phone, fileName).run();
+            const currentTimeIsrael = getIsraelTimeForDB();
+
+            // מחיקה מטבלת ההעלאות + כתיבת הלוג לטבלת המחיקות בשעון ישראל
+            await env.DB.batch([
+                env.DB.prepare(`DELETE FROM upload_events WHERE phone = ? AND file_name = ?`).bind(user.phone, fileName),
+                env.DB.prepare(`INSERT INTO delete_logs (phone, ip_address, file_name, deleted_at) VALUES (?, ?, ?, ?)`).bind(user.phone, userIp, fileName, currentTimeIsrael)
+            ]);
             
             return Response.json({ success: true, message: "ההודעה נמחקה בהצלחה." });
         } else {
