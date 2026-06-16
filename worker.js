@@ -1,26 +1,13 @@
 // worker.js
 
-import { 
-    handleCheckIdentifier, 
-    handleRegister, 
-    handleLogin, 
-    handleUpdateProfile
-} from './auth.js';
-
-import {
-    handleAdminLogin,
-    handleAdminGetUsers,
-    handleAdminUpdateUser
-} from './admin.js';
-
-// ייבוא מערכת האימות החדשה
+import { handleCheckIdentifier, handleRegister, handleLogin, handleUpdateProfile } from './auth.js';
+import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser } from './admin.js';
 import { VerificationSystem } from './verification.js';
-
-// ייבוא מודול ההודעות החדש שיצרנו
 import { handleGetMessages, handleStreamMessage } from './messages.js';
-
-// ייבוא מודול העלאת קבצים החדש (קובץ נפרד)
 import { handleUploadMessage } from './upload.js';
+
+// ---- ייבוא מנגנון הצינתוק החדש שיצרנו ----
+import { processTzintukRequest } from './tzintuk.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -36,18 +23,14 @@ export default {
 
         const url = new URL(request.url);
         const pathname = url.pathname.replace(/\/$/, "");
-
-        // משיכת כתובת ה-IP של המשתמש (או ברירת מחדל אם לא קיים)
         const userIp = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
         try {
             let response;
-            
-            // אתחול מערכת האימות (משתמשת במסד הנתונים ובטוקן של ימות שכבר מוגדרים ב-env)
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
             // ==========================================
-            // נתיבי מערכת שמע הודעות (חדש + העלאה)
+            // נתיבי מערכת שמע הודעות וצינתוקים
             // ==========================================
             if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
                 response = await handleGetMessages(request, env);
@@ -58,9 +41,27 @@ export default {
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) {
                 response = await handleStreamMessage(request, env);
             }
+            // ---> נתיב חדש לשליחת הצינתוק <---
+            else if (request.method === "POST" && pathname.endsWith("/api/messages/tzintuk")) {
+                const body = await request.json();
+                if (!body.userToken) {
+                    response = Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
+                } else {
+                    const [identifier, password] = body.userToken.split(':');
+                    const user = await env.DB.prepare("SELECT phone FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
+                    
+                    if (!user) {
+                        response = Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
+                    } else {
+                        // הפעלת הפונקציה החדשה
+                        const result = await processTzintukRequest(env, user.phone, env.YEMOT_TOKEN);
+                        response = Response.json(result, { status: result.success ? 200 : 400 });
+                    }
+                }
+            }
 
             // ==========================================
-            // נתיבי מערכת האימות (צינתוקים) - משתמש רגיל
+            // נתיבי מערכת האימות (צינתוקים של ההרשמה) - משתמש רגיל
             // ==========================================
             else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
                 const body = await request.json();
@@ -100,7 +101,6 @@ export default {
                         if (!admin) {
                             response = Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
                         } else {
-                            // אימות מנהל עבר בהצלחה - ביצוע הפעולה המבוקשת
                             if (pathname.endsWith("/api/verify/admin/logs")) {
                                 const limit = body.limit || 100;
                                 const offset = body.offset || 0;
@@ -126,7 +126,7 @@ export default {
             }
 
             // ==========================================
-            // נתיבי משתמשים רגילים (auth.js) - קיים
+            // נתיבי משתמשים רגילים וניהול (auth.js / admin.js)
             // ==========================================
             else if (request.method === "POST" && pathname.endsWith("/api/check-identifier")) {
                 response = await handleCheckIdentifier(request, env);
@@ -140,10 +140,6 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
                 response = await handleUpdateProfile(request, env);
             }
-            
-            // ==========================================
-            // נתיבי ניהול (admin.js) - קיים
-            // ==========================================
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) {
                 response = await handleAdminLogin(request, env);
             }
@@ -153,15 +149,10 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/update-user")) {
                 response = await handleAdminUpdateUser(request, env);
             }
-            
-            // ==========================================
-            // נתיב לא נמצא
-            // ==========================================
             else {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
             }
 
-            // החלת כותרות ה-CORS על כל התשובות (תומך גם ב-Response רגילים כמו ב-Stream)
             const newResponse = new Response(response.body, response);
             for (let [key, value] of Object.entries(corsHeaders)) {
                 newResponse.headers.set(key, value);
