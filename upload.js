@@ -1,5 +1,6 @@
+// upload.js
 import { getNameFromIni } from './yemot.js';
-import { getIsraelTimeForDB } from './timeUtils.js'; // הוספנו את ניהול הזמנים שלנו!
+import { getIsraelTimeForDB } from './timeUtils.js';
 
 export async function handleUploadMessage(request, env) {
     try {
@@ -57,14 +58,20 @@ export async function handleUploadMessage(request, env) {
             return Response.json({ error: "שגיאה בהעלאת הקובץ מצד ימות המשיח", yemotDetails: data }, { status: 400 });
         }
 
-        // --- שולפים את הזמן המדויק בישראל ---
         const currentTimeIsrael = getIsraelTimeForDB();
+        
+        // חילוץ שם הקובץ (למשל: 3666.wav) מתוך ה-path שימות החזירו
+        let savedFileName = null;
+        if (data.path) {
+            const parts = data.path.split('/');
+            savedFileName = parts[parts.length - 1]; // "3666.wav"
+        }
 
-        // תיעוד ההעלאה במסד הנתונים עם שעון ישראל כדי שחלון ה-2 דקות לצינתוק יעבוד במדויק
+        // רישום ההעלאה + שם הקובץ בטבלה
         try {
             await env.DB.prepare(
-                `INSERT INTO upload_events (phone, upload_time, tzintuk_sent) VALUES (?, ?, 0)`
-            ).bind(user.phone, currentTimeIsrael).run();
+                `INSERT INTO upload_events (phone, upload_time, tzintuk_sent, file_name) VALUES (?, ?, 0, ?)`
+            ).bind(user.phone, currentTimeIsrael, savedFileName).run();
         } catch (e) {
             console.error("שגיאה ברישום ההעלאה בטבלה:", e);
         }
@@ -103,7 +110,6 @@ export async function handleUploadMessage(request, env) {
             }
 
             if (!recDate) {
-                // המרה של הפורמט YYYY-MM-DD HH:MM:SS לפורמט של ימות YYYY-MM-DD-HH-MM-SS
                 recDate = currentTimeIsrael.replace(/[: ]/g, '-');
             }
 
@@ -139,6 +145,6 @@ export async function handleUploadMessage(request, env) {
         });
 
     } catch (error) {
-        return Response.json({ error: "שגיאת שרת פנימית בעת ניסיון העלאת הקובץ", details: error.message }, { status: 500 });
+        return Response.json({ error: "שגיאת שרת פנימית", details: error.message }, { status: 500 });
     }
 }
