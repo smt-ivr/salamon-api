@@ -109,7 +109,7 @@ export async function processTzintukRequest(env, phone, yemotToken) {
     }
 
     // 4. אם הכל תקין, שולחים את הצינתוק לימות המשיח
-    const sendUrl = `https://www.call2all.co.il/ym/api/RunTzintuk?token=${yemotToken}&callerId=${CALLER_ID}&TzintukTimeOut=16&phones=tzl:admin&sayInfoOnAnswer=true`;
+    const sendUrl = `https://www.call2all.co.il/ym/api/RunTzintuk?token=${yemotToken}&callerId=${CALLER_ID}&TzintukTimeOut=16&phones=tzl:admins&sayInfoOnAnswer=true`;
     
     try {
         const tzintukRes = await fetch(sendUrl);
