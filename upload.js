@@ -1,6 +1,16 @@
 // upload.js
 import { getNameFromIni } from './yemot.js';
 
+// פונקציית עזר פנימית לקבלת תאריך ושעה מדויקים בישראל עבור קובץ ה-TXT
+function getIsraelDateStringForTxt() {
+    const options = { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+    const formatter = new Intl.DateTimeFormat('en-US', options);
+    const parts = formatter.formatToParts(new Date());
+    const d = {};
+    parts.forEach(({ type, value }) => { d[type] = value; });
+    return `${d.year}-${d.month}-${d.day}-${d.hour}-${d.minute}-${d.second}`;
+}
+
 export async function handleUploadMessage(request, env) {
     try {
         const formData = await request.formData();
@@ -23,11 +33,7 @@ export async function handleUploadMessage(request, env) {
             return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
         }
 
-        // ==========================================
-        // מנגנון זיהוי ובדיקת הרשאות חכם מפוצל
-        // ==========================================
         let uploadType = formData.get('uploadType');
-        // אם לא נשלח סוג מפורש מהלקוח, נזהה לפי שם הקובץ (שהלקוח שלנו מייצר למקליטים)
         if (!uploadType) {
             uploadType = file.name.startsWith('recording.') ? 'record' : 'file';
         }
@@ -42,9 +48,6 @@ export async function handleUploadMessage(request, env) {
         const token = env.YEMOT_TOKEN;
         const FOLDER_PATH = 'ivr2:/1/2';
 
-        // ==========================================
-        // 1. העלאת קובץ השמע 
-        // ==========================================
         const yemotFormData = new FormData();
         yemotFormData.append('token', token);
         yemotFormData.append('path', FOLDER_PATH);
@@ -61,15 +64,18 @@ export async function handleUploadMessage(request, env) {
         const data = await yemotResponse.json();
 
         if (data.responseStatus !== 'OK') {
-            return Response.json({ 
-                error: "שגיאה בהעלאת הקובץ מצד ימות המשיח", 
-                yemotDetails: data 
-            }, { status: 400 });
+            return Response.json({ error: "שגיאה בהעלאת הקובץ מצד ימות המשיח", yemotDetails: data }, { status: 400 });
         }
 
-        // ==========================================
-        // שלב 2: בניית קובץ TXT 
-        // ==========================================
+        // --- הוספה: תיעוד ההעלאה במסד הנתונים כדי לאפשר צינתוק ב-2 דקות הקרובות ---
+        try {
+            await env.DB.prepare(
+                `INSERT INTO upload_events (phone, upload_time, tzintuk_sent) VALUES (?, CURRENT_TIMESTAMP, 0)`
+            ).bind(user.phone).run();
+        } catch (e) {
+            console.error("שגיאה ברישום ההעלאה בטבלה:", e);
+        }
+
         let txtSuccess = false;
         let txtDetails = null;
 
@@ -87,9 +93,7 @@ export async function handleUploadMessage(request, env) {
                         existingText = getTxtData.contents;
                     }
                 }
-            } catch (e) {
-                // מתעלמים במקרה של שגיאה בקריאה
-            }
+            } catch (e) {}
 
             const userName = await getNameFromIni(user.phone, token);
             const displayName = userName ? `${userName} (דרך האתר)` : `משתמש אתר (דרך האתר)`;
@@ -106,9 +110,8 @@ export async function handleUploadMessage(request, env) {
             }
 
             if (!recDate) {
-                const now = new Date();
-                const pad = (n) => n.toString().padStart(2, '0');
-                recDate = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+                // שימוש בשעון ישראל מדויק לימות המשיח!
+                recDate = getIsraelDateStringForTxt();
             }
 
             const pathParts = data.path.split('/');
@@ -143,9 +146,6 @@ export async function handleUploadMessage(request, env) {
         });
 
     } catch (error) {
-        return Response.json({ 
-            error: "שגיאת שרת פנימית בעת ניסיון העלאת הקובץ", 
-            details: error.message 
-        }, { status: 500 });
+        return Response.json({ error: "שגיאת שרת פנימית בעת ניסיון העלאת הקובץ", details: error.message }, { status: 500 });
     }
 }
