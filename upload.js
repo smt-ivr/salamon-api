@@ -1,15 +1,5 @@
-// upload.js
 import { getNameFromIni } from './yemot.js';
-
-// פונקציית עזר פנימית לקבלת תאריך ושעה מדויקים בישראל עבור קובץ ה-TXT
-function getIsraelDateStringForTxt() {
-    const options = { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-    const formatter = new Intl.DateTimeFormat('en-US', options);
-    const parts = formatter.formatToParts(new Date());
-    const d = {};
-    parts.forEach(({ type, value }) => { d[type] = value; });
-    return `${d.year}-${d.month}-${d.day}-${d.hour}-${d.minute}-${d.second}`;
-}
+import { getIsraelTimeForDB } from './timeUtils.js'; // הוספנו את ניהול הזמנים שלנו!
 
 export async function handleUploadMessage(request, env) {
     try {
@@ -67,11 +57,14 @@ export async function handleUploadMessage(request, env) {
             return Response.json({ error: "שגיאה בהעלאת הקובץ מצד ימות המשיח", yemotDetails: data }, { status: 400 });
         }
 
-        // --- הוספה: תיעוד ההעלאה במסד הנתונים כדי לאפשר צינתוק ב-2 דקות הקרובות ---
+        // --- שולפים את הזמן המדויק בישראל ---
+        const currentTimeIsrael = getIsraelTimeForDB();
+
+        // תיעוד ההעלאה במסד הנתונים עם שעון ישראל כדי שחלון ה-2 דקות לצינתוק יעבוד במדויק
         try {
             await env.DB.prepare(
-                `INSERT INTO upload_events (phone, upload_time, tzintuk_sent) VALUES (?, CURRENT_TIMESTAMP, 0)`
-            ).bind(user.phone).run();
+                `INSERT INTO upload_events (phone, upload_time, tzintuk_sent) VALUES (?, ?, 0)`
+            ).bind(user.phone, currentTimeIsrael).run();
         } catch (e) {
             console.error("שגיאה ברישום ההעלאה בטבלה:", e);
         }
@@ -110,8 +103,8 @@ export async function handleUploadMessage(request, env) {
             }
 
             if (!recDate) {
-                // שימוש בשעון ישראל מדויק לימות המשיח!
-                recDate = getIsraelDateStringForTxt();
+                // המרה של הפורמט YYYY-MM-DD HH:MM:SS לפורמט של ימות YYYY-MM-DD-HH-MM-SS
+                recDate = currentTimeIsrael.replace(/[: ]/g, '-');
             }
 
             const pathParts = data.path.split('/');
