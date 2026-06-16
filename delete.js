@@ -41,7 +41,7 @@ async function checkEligibility(db, phone, fileName) {
 
     // בדיקת צינתוק - אם נשלח צינתוק אסור למחוק
     if (uploadRecord.tzintuk_sent === 1) {
-        return { allowed: false, message: "לא ניתן למחוק. כבר נשלח צינתוק למנויים על הודעה זו." };
+        return { allowed: false, message: " לא ניתן למחוק הודעה שנשלחה עליה צינתוק" };
     }
 
     // בדיקה האם עברו יותר מ-12 שעות?
