@@ -7,7 +7,7 @@ import { getIsraelTimeForDB, getMinutesSinceIsraelDbTime, getMinutesSinceYemotTi
 const UPLOAD_WINDOW_MINUTES = 2;       // תוך כמה דקות מהעלאה מותר לשלוח צינתוק?
 const TZINTUK_COOLDOWN_MINUTES = 5;    // מרווח חובה מינימלי בין צינתוקים (מניעת ספאם)
 const BLOCK_HOURS_START = 0;           // שעת תחילת חסימת לילה (0 = חצות)
-const BLOCK_HOURS_END = 7;             // שעת סיום חסימת לילה (7 = 07:00 בבוקר)
+const BLOCK_HOURS_END = 14;             // שעת סיום חסימת לילה (7 = 07:00 בבוקר)
 const CALLER_ID = "0775282936";        // מספר המחייג
 // ============================================
 
