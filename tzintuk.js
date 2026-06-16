@@ -98,14 +98,14 @@ export async function processTzintukRequest(env, phone, yemotToken) {
         if (internalMinutesPassed < TZINTUK_COOLDOWN_MINUTES && internalMinutesPassed >= 0) {
             // חישוב כמה דקות בדיוק נשארו להמתנה
             const waitTimeMinutes = Math.ceil(TZINTUK_COOLDOWN_MINUTES - internalMinutesPassed);
-            return { success: false, message: `אנא המתן. ניתן לשלוח צינתוק בעוד כ-${waitTimeMinutes} דקות.` };
+            return { success: false, message: `לא ניתן לשלוח צינתוק, הפעלת צינתוק לפני זמן קצר, החסימה תשוחרר בעוד-${waitTimeMinutes} דקות.` };
         }
     }
 
     // בדיקת קירור מול ימות המשיח (אם עשה צינתוק בטלפון)
     const recentlySentInYemot = await checkYemotLogs(phone, yemotToken);
     if (recentlySentInYemot) {
-        return { success: false, message: `הפעלת צינתוק דרך הטלפון לאחרונה. אנא המתן ${TZINTUK_COOLDOWN_MINUTES} דקות.` };
+        return { success: false, message: `הפעלת צינתוק דרך הטלפון לפני זמן קצר, החסימה תשוחרר בעוד ${TZINTUK_COOLDOWN_MINUTES} דקות.` };
     }
 
     // 4. אם הכל תקין, שולחים את הצינתוק לימות המשיח
@@ -122,9 +122,9 @@ export async function processTzintukRequest(env, phone, yemotToken) {
                 db.prepare(`INSERT INTO tzintuk_logs (phone, sent_time) VALUES (?, ?)`).bind(phone, currentTimeForDB)
             ]);
 
-            return { success: true, message: "הצינתוק נשלח למנויים בהצלחה!" };
+            return { success: true, message: "הצינתוק נשלח בהצלחה!" };
         } else {
-            return { success: false, message: "שגיאה מול שרתי ימות המשיח.", details: tzintukData };
+            return { success: false, message: "שגיאה מול ימות המשיח בשליחת הצינתוק.", details: tzintukData };
         }
     } catch (error) {
         console.error("Error sending tzintuk:", error);
