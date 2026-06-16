@@ -16,9 +16,10 @@ import {
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
-
-// ייבוא מנגנון הצינתוק החדש שיצרנו
 import { processTzintukRequest } from './tzintuk.js';
+
+// ייבוא מנגנון המחיקה החדש
+import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -39,11 +40,11 @@ export default {
         try {
             let response;
             
-            // אתחול מערכת האימות (משתמשת במסד הנתונים ובטוקן של ימות ממשתני הסביבה)
+            // אתחול מערכת האימות
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
             // ==========================================
-            // נתיבי מערכת שמע הודעות וצינתוקים
+            // נתיבי מערכת שמע הודעות, צינתוקים ומחיקה
             // ==========================================
             if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
                 response = await handleGetMessages(request, env);
@@ -54,7 +55,6 @@ export default {
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) {
                 response = await handleStreamMessage(request, env);
             }
-            // ---> נתיב שליחת הצינתוק מהאתר <---
             else if (request.method === "POST" && pathname.endsWith("/api/messages/tzintuk")) {
                 const body = await request.json();
                 if (!body.userToken) {
@@ -66,11 +66,17 @@ export default {
                     if (!user) {
                         response = Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
                     } else {
-                        // הפעלת הפונקציה תוך שימוש במשתנה הסביבה בלבד
                         const result = await processTzintukRequest(env, user.phone, env.YEMOT_TOKEN);
                         response = Response.json(result, { status: result.success ? 200 : 400 });
                     }
                 }
+            }
+            // ---> נתיבי מחיקת הודעות <---
+            else if (request.method === "POST" && pathname.endsWith("/api/messages/check-delete")) {
+                response = await handleCheckDeleteEligibility(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/messages/delete")) {
+                response = await handleDeleteMessage(request, env);
             }
 
             // ==========================================
@@ -170,7 +176,6 @@ export default {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
             }
 
-            // החלת כותרות ה-CORS על כל התשובות
             const newResponse = new Response(response.body, response);
             for (let [key, value] of Object.entries(corsHeaders)) {
                 newResponse.headers.set(key, value);
