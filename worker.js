@@ -1,12 +1,23 @@
 // worker.js
 
-import { handleCheckIdentifier, handleRegister, handleLogin, handleUpdateProfile } from './auth.js';
-import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser } from './admin.js';
+import { 
+    handleCheckIdentifier, 
+    handleRegister, 
+    handleLogin, 
+    handleUpdateProfile
+} from './auth.js';
+
+import {
+    handleAdminLogin,
+    handleAdminGetUsers,
+    handleAdminUpdateUser
+} from './admin.js';
+
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
 
-// ---- ייבוא מנגנון הצינתוק החדש שיצרנו ----
+// ייבוא מנגנון הצינתוק החדש שיצרנו
 import { processTzintukRequest } from './tzintuk.js';
 
 export default {
@@ -27,6 +38,8 @@ export default {
 
         try {
             let response;
+            
+            // אתחול מערכת האימות (משתמשת במסד הנתונים ובטוקן של ימות ממשתני הסביבה)
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
             // ==========================================
@@ -41,7 +54,7 @@ export default {
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) {
                 response = await handleStreamMessage(request, env);
             }
-            // ---> נתיב חדש לשליחת הצינתוק <---
+            // ---> נתיב שליחת הצינתוק מהאתר <---
             else if (request.method === "POST" && pathname.endsWith("/api/messages/tzintuk")) {
                 const body = await request.json();
                 if (!body.userToken) {
@@ -53,7 +66,7 @@ export default {
                     if (!user) {
                         response = Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
                     } else {
-                        // הפעלת הפונקציה החדשה
+                        // הפעלת הפונקציה תוך שימוש במשתנה הסביבה בלבד
                         const result = await processTzintukRequest(env, user.phone, env.YEMOT_TOKEN);
                         response = Response.json(result, { status: result.success ? 200 : 400 });
                     }
@@ -61,7 +74,7 @@ export default {
             }
 
             // ==========================================
-            // נתיבי מערכת האימות (צינתוקים של ההרשמה) - משתמש רגיל
+            // נתיבי מערכת האימות (צינתוקים) - הרשמה וכניסה
             // ==========================================
             else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
                 const body = await request.json();
@@ -126,7 +139,7 @@ export default {
             }
 
             // ==========================================
-            // נתיבי משתמשים רגילים וניהול (auth.js / admin.js)
+            // נתיבי משתמשים רגילים (auth.js)
             // ==========================================
             else if (request.method === "POST" && pathname.endsWith("/api/check-identifier")) {
                 response = await handleCheckIdentifier(request, env);
@@ -140,6 +153,10 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
                 response = await handleUpdateProfile(request, env);
             }
+            
+            // ==========================================
+            // נתיבי ניהול (admin.js)
+            // ==========================================
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) {
                 response = await handleAdminLogin(request, env);
             }
@@ -153,6 +170,7 @@ export default {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
             }
 
+            // החלת כותרות ה-CORS על כל התשובות
             const newResponse = new Response(response.body, response);
             for (let [key, value] of Object.entries(corsHeaders)) {
                 newResponse.headers.set(key, value);
