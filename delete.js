@@ -47,7 +47,7 @@ async function checkEligibility(db, phone, fileName) {
     // בדיקה האם עברו יותר מ-12 שעות?
     const minutesPassed = getMinutesSinceIsraelDbTime(uploadRecord.upload_time);
     if (minutesPassed > (DELETE_WINDOW_HOURS * 60) || minutesPassed < 0) {
-        return { allowed: false, message: `עבר הזמן המותר למחיקה עצמאית (עד ${DELETE_WINDOW_HOURS} שעות ממועד ההעלאה).` };
+        return { allowed: false, message: `לא ניתן למחוק הודעה שהוקלטה לפני יותר מ ${DELETE_WINDOW_HOURS} שעות.` };
     }
 
     return { allowed: true };
