@@ -1,59 +1,71 @@
 // timeUtils.js
 
 /**
- * מחזיר את הזמן הנוכחי בישראל בפורמט שמתאים לשמירה במסד הנתונים (D1 / SQLite)
- * פורמט: YYYY-MM-DD HH:MM:SS
+ * מחזיר את הזמן הנוכחי בישראל בפורמט: YYYY-MM-DD HH:MM:SS
  */
 export function getIsraelTimeForDB() {
     const options = { 
         timeZone: 'Asia/Jerusalem', 
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit', 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit', 
+        year: 'numeric', month: '2-digit', day: '2-digit', 
+        hour: '2-digit', minute: '2-digit', second: '2-digit', 
         hour12: false 
     };
     
     const formatter = new Intl.DateTimeFormat('en-US', options);
     const parts = formatter.formatToParts(new Date());
-    const dateObj = {};
+    const d = {};
+    parts.forEach(({ type, value }) => { d[type] = value; });
     
-    parts.forEach(({ type, value }) => { 
-        dateObj[type] = value; 
-    });
+    // מניעת באג בדפדפנים מסוימים שהופכים חצות ל-24 במקום 00
+    let hour = d.hour === '24' ? '00' : d.hour;
     
-    return `${dateObj.year}-${dateObj.month}-${dateObj.day} ${dateObj.hour}:${dateObj.minute}:${dateObj.second}`;
+    return `${d.year}-${d.month}-${d.day} ${hour}:${d.minute}:${d.second}`;
 }
 
 /**
- * מחזיר את הזמן הנוכחי בישראל כמספר מילישניות (Timestampt) לטובת חישובי זמנים
+ * חישוב חסין מאזורי זמן: בודק כמה דקות עברו מהזמן ששמור בטבלה לזמן הנוכחי בישראל
  */
-export function getNowMs() {
-    return Date.now();
+export function getMinutesSinceIsraelDbTime(dbTimeStr) {
+    if (!dbTimeStr) return Infinity;
+    
+    // מוסיפים 'Z' פיקטיבי לשני הזמנים כדי שהם יחושבו כאילו שניהם מאותו אזור זמן בדיוק, וכך מנטרלים את הפרשי ה-UTC.
+    const pastMs = new Date(dbTimeStr.replace(' ', 'T') + 'Z').getTime();
+    
+    const nowIsraelStr = getIsraelTimeForDB();
+    const nowMs = new Date(nowIsraelStr.replace(' ', 'T') + 'Z').getTime();
+    
+    return (nowMs - pastMs) / (1000 * 60);
 }
 
 /**
- * ממיר את התאריך והשעה שמתקבלים מהלוג של ימות המשיח למילישניות
- * ימות המשיח מחזירים: Date: DD/MM/YYYY, Time: HH:MM:SS
+ * חישוב חסין מאזורי זמן מול התאריך והשעה שמגיעים מימות המשיח
  */
-export function parseYemotTimeMs(dateStr, timeStr) {
+export function getMinutesSinceYemotTime(dateStr, timeStr) {
+    if (!dateStr || !timeStr) return Infinity;
+    
     const [day, month, year] = dateStr.split('/');
-    const [hour, minute, second] = timeStr.split(':');
+    const pastMs = new Date(`${year}-${month}-${day}T${timeStr}Z`).getTime();
     
-    // יוצרים מחרוזת תאריך בפורמט ISO עם אזור זמן של ישראל (+02:00 לחורף או +03:00 לקיץ)
-    // הדרך הבטוחה ביותר ב-JS בסביבת שרת היא לבנות את התאריך ישירות
-    const dateString = `${year}-${month}-${day}T${hour}:${minute}:${second}+02:00`; 
-    // הערה: שימוש ב+02:00 כממוצע, לחישוב קצר של 5 דקות זה מדויק לחלוטין
-    return new Date(dateString).getTime();
+    const nowIsraelStr = getIsraelTimeForDB();
+    const nowMs = new Date(nowIsraelStr.replace(' ', 'T') + 'Z').getTime();
+    
+    return (nowMs - pastMs) / (1000 * 60);
 }
 
 /**
- * פונקציית עזר להמרת זמן מהמסד נתונים למילישניות לחישוב
+ * בדיקת שעות לילה/שעות אסורות לפי שעון ישראל
  */
-export function parseDBTimeToMs(dbTimeStr) {
-    // dbTimeStr הוא בפורמט YYYY-MM-DD HH:MM:SS
-    const isoString = dbTimeStr.replace(' ', 'T') + '+02:00';
-    return new Date(isoString).getTime();
+export function isWithinBlockedHours(startHour, endHour) {
+    const options = { timeZone: 'Asia/Jerusalem', hour: 'numeric', hour12: false };
+    const currentHourStr = new Intl.DateTimeFormat('en-US', options).format(new Date());
+    let hour = parseInt(currentHourStr, 10);
+    if (hour === 24) hour = 0; // טיפול בחצות
+    
+    if (startHour < endHour) {
+        // לדוגמה: 0 עד 7 (כולל חצות ועד 6:59:59)
+        return hour >= startHour && hour < endHour;
+    } else {
+        // תמיכה בשעות הפוכות, נגיד מ-23 עד 7 בבוקר למחרת
+        return hour >= startHour || hour < endHour;
+    }
 }
