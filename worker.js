@@ -4,7 +4,8 @@ import {
     handleCheckIdentifier, 
     handleRegister, 
     handleLogin, 
-    handleUpdateProfile
+    handleUpdateProfile,
+    handleResetPasswordConfirm // ייבוא הפונקציה החדשה
 } from './auth.js';
 
 import {
@@ -18,7 +19,6 @@ import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
 
-// ייבוא מנגנון המחיקה החדש
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
 
 export default {
@@ -71,7 +71,6 @@ export default {
                     }
                 }
             }
-            // ---> נתיבי מחיקת הודעות <---
             else if (request.method === "POST" && pathname.endsWith("/api/messages/check-delete")) {
                 response = await handleCheckDeleteEligibility(request, env);
             }
@@ -80,15 +79,28 @@ export default {
             }
 
             // ==========================================
-            // נתיבי מערכת האימות (צינתוקים) - הרשמה וכניסה
+            // נתיבי מערכת האימות (צינתוקים ומיילים) - הרשמה וכניסה
             // ==========================================
             else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
                 const body = await request.json();
-                if (!body.phone) {
-                    response = Response.json({ error: "חסר מספר טלפון" }, { status: 400 });
+                
+                // התאמה חכמה: אם האינטנט הוא איפוס סיסמה (reset), נשתמש במנגנון המייל החדש
+                if (body.intent === 'reset') {
+                    const identifier = body.identifier || body.phone;
+                    if (!identifier) {
+                        response = Response.json({ error: "חסר מזהה משתמש (טלפון או אימייל)" }, { status: 400 });
+                    } else {
+                        const result = await verifySystem.requestPasswordReset(identifier, userIp, env);
+                        response = Response.json(result, { status: result.success ? 200 : 400 });
+                    }
                 } else {
-                    const result = await verifySystem.requestVerification(body.phone, userIp, body.intent || 'register');
-                    response = Response.json(result, { status: result.success ? 200 : 400 });
+                    // ברירת מחדל: צינתוק טלפוני להרשמה/כניסה
+                    if (!body.phone) {
+                        response = Response.json({ error: "חסר מספר טלפון" }, { status: 400 });
+                    } else {
+                        const result = await verifySystem.requestVerification(body.phone, userIp, body.intent || 'register');
+                        response = Response.json(result, { status: result.success ? 200 : 400 });
+                    }
                 }
             }
             else if (request.method === "POST" && pathname.endsWith("/api/verify/check")) {
@@ -158,6 +170,10 @@ export default {
             } 
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
                 response = await handleUpdateProfile(request, env);
+            }
+            // ---> חדש: נתיב השלמת איפוס סיסמה <---
+            else if (request.method === "POST" && pathname.endsWith("/api/reset-password/confirm")) {
+                response = await handleResetPasswordConfirm(request, env);
             }
             
             // ==========================================
