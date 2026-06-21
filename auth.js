@@ -45,7 +45,7 @@ export async function handleCheckIdentifier(request, env) {
     });
 }
 
-// 2. הרשמה מאובטחת - עם בדיקת צינתוק מצד השרת!
+// 2. הרשמה מאובטחת
 export async function handleRegister(request, env) {
     const { phone, email, password, passwordConfirm, sessionId } = await request.json();
 
@@ -82,7 +82,6 @@ export async function handleRegister(request, env) {
     }
 
     try {
-        // שינוי כאן: הגדרת ברירת המחדל בהרשמה -> can_record=1 (פתוח), can_upload=0 (סגור)
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password, can_record, can_upload) VALUES (?, ?, ?, 1, 0)`
         ).bind(phone, email || null, password).run();
@@ -101,7 +100,7 @@ export async function handleRegister(request, env) {
     }
 }
 
-// 3. התחברות (מעודכן עם 2 ההרשאות)
+// 3. התחברות
 export async function handleLogin(request, env) {
     const { identifier, password } = await request.json();
 
@@ -127,7 +126,7 @@ export async function handleLogin(request, env) {
             email: user.email,
             connectedToTzintukim: phoneStatus.active,
             canUpload: !!user.can_upload,
-            canRecord: user.can_record !== 0 // אם זה NULL מהעבר זה ייחשב כפתוח
+            canRecord: user.can_record !== 0
         }
     });
 }
@@ -161,5 +160,42 @@ export async function handleUpdateProfile(request, env) {
         return Response.json({ success: true, message: "הפרטים עודכנו בהצלחה" });
     } catch (e) {
         return Response.json({ error: "שגיאה בעדכון הנתונים. ייתכן והמייל תפוס." }, { status: 400 });
+    }
+}
+
+// --- חדש: שמירה ועדכון סיסמה בפועל לאחר שקוד האימות אומת בהצלחה ---
+export async function handleResetPasswordConfirm(request, env) {
+    const { phone, password, passwordConfirm, token } = await request.json();
+
+    if (!phone || !password || !passwordConfirm || !token) {
+        return Response.json({ error: "חסרים פרטי חובה להשלמת איפוס הסיסמה." }, { status: 400 });
+    }
+    if (password !== passwordConfirm) {
+        return Response.json({ error: "הסיסמאות החדשות שהוזנו אינן תואמות." }, { status: 400 });
+    }
+    if (!/^\d{4,10}$/.test(password)) {
+        return Response.json({ error: "הסיסמה חייבת להכיל בין 4 ל-10 ספרות בלבד." }, { status: 400 });
+    }
+
+    // בדיקה שהטוקן שקיבל המשתמש מ-verifyCode אכן מאומת, שייך לטלפון שלו והוא מסוג reset
+    const session = await env.DB.prepare(
+        `SELECT * FROM verification_sessions 
+         WHERE auth_token = ? AND phone = ? AND status = 'verified' AND intent = 'reset'`
+    ).bind(token, phone).first();
+
+    if (!session) {
+        return Response.json({ error: "אימות פג תוקף, שגוי או שכבר בוצע בו שימוש. אנא בצע איפוס מחדש." }, { status: 403 });
+    }
+
+    try {
+        // עדכון הסיסמה החדשה בטבלת המשתמשים
+        await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?").bind(password, phone).run();
+        
+        // עדכון הסשן ל-used כדי שלא יהיה ניתן להשתמש בטוקן הזה שוב ושוב
+        await env.DB.prepare("UPDATE verification_sessions SET status = 'used' WHERE id = ?").bind(session.id).run();
+
+        return Response.json({ success: true, message: "הסיסמה שלך אופסה ועודכנה בהצלחה!" });
+    } catch (e) {
+        return Response.json({ error: "שגיאת שרת פנימית בעת עדכון הסיסמה החדשה." }, { status: 500 });
     }
 }
