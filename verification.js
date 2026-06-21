@@ -235,18 +235,18 @@ export class VerificationSystem {
                 <div style="direction: rtl; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 500px; margin: 0 auto; padding: 25px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; text-align: center; color: #1a202c; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
                     <h2 style="color: #2b6cb0; margin-bottom: 20px; font-size: 24px;">בקשה לאיפוס סיסמה</h2>
                     <p style="font-size: 16px; margin-bottom: 10px; color: #4a5568; text-align: right;">שלום <strong>${displayName}</strong>,</p>
-                    <p style="font-size: 16px; margin-bottom: 20px; color: #4a5568; text-align: right; line-height: 1.5;">קיבלנו בקשה לאיפוס הסיסמה עבור חשבונך במערכת סלומון מכתובת ה-IP המאובטחת: <code style="background:#f1f5f9; padding:3px 6px; border-radius:4px; font-family: monospace;">${ip}</code>.</p>
-                    <p style="font-size: 16px; margin-bottom: 25px; color: #4a5568; text-align: right;">להמשך תהליך איפוס הסיסמה, אנא הזן את קוד האימות החד-פעמי הבא באתר:</p>
+                    <p style="font-size: 16px; margin-bottom: 20px; color: #4a5568; text-align: right; line-height: 1.5;">קיבלנו בקשה לאיפוס הסיסמה עבור חשבונך באתר עכשיו סלומון מכתובת ה-IP: <code style="background:#f1f5f9; padding:3px 6px; border-radius:4px; font-family: monospace;">${ip}</code>.</p>
+                    <p style="font-size: 16px; margin-bottom: 25px; color: #4a5568; text-align: right;">להמשך תהליך איפוס הסיסמה, אנא הזן את קוד האימות החד-פעמי הבא:</p>
                     
                     <div style="font-size: 32px; font-weight: bold; background-color: #f7fafc; border: 2px dashed #cbd5e0; padding: 12px 30px; display: inline-block; letter-spacing: 4px; margin-bottom: 25px; color: #2d3748; border-radius: 8px;">
                         ${verifyCode}
                     </div>
                     
                     <p style="font-size: 14px; color: #718096; margin-bottom: 5px;">הקוד יהיה בתוקף ל-10 הדקות הקרובות בלבד.</p>
-                    <p style="font-size: 13px; color: #a0aec0; margin-top: 0;">אם לא ביקשת לאפס את הסיסמה שלך, אל דאגה – ניתן להתעלם מאימייל זה בבטחה.</p>
+                    <p style="font-size: 13px; color: #a0aec0; margin-top: 0;">אם לא ביקשת לאפס את הסיסמה שלך – ניתן להתעלם מאימייל זה.</p>
                     
                     <hr style="border: 0; border-top: 1px solid #edf2f7; margin: 30px 0;">
-                    <p style="font-size: 12px; color: #a0aec0; margin: 0;">נשלח באופן אוטומטי על ידי מערכת סלומון &copy; ${new Date().getFullYear()}</p>
+                    <p style="font-size: 12px; color: #a0aec0; margin: 0;">נשלח באופן אוטומטי על ידי S.M.T מאתר עכשיו סלומון &copy; ${new Date().getFullYear()}</p>
                 </div>
             `;
 
@@ -260,9 +260,9 @@ export class VerificationSystem {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    from: 'סלומון <salamon@smti.uk>',
+                    from: 'עכשיו סלומון <salamon@smti.uk>',
                     to: [user.email],
-                    subject: 'איפוס סיסמה - מערכת סלומון',
+                    subject: 'איפוס סיסמה - מאתר עכשיו סלומון',
                     html: emailHtml,
                     text: emailText
                 })
