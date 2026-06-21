@@ -1,4 +1,5 @@
-import { checkPhoneStatus } from './yemot.js';
+// verification.js
+import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 
 export class VerificationSystem {
     constructor(db, yemotToken) {
@@ -13,7 +14,7 @@ export class VerificationSystem {
         ).bind(level, phone || null, ip || null, action, details).run();
     }
 
-    // פונקציית עזר להמרת זמן (תומכת כעת גם בימים)
+    // פונקציית עזר להמרת זמן
     formatTimeRemaining(seconds) {
         if (seconds <= 0) return 'זמן קצר';
         if (seconds < 60) return `${seconds} שניות`;
@@ -42,7 +43,7 @@ export class VerificationSystem {
         return 60;
     }
 
-    // 1. שליחת בקשת אימות
+    // 1. שליחת בקשת אימות (צינתוק טלפוני להרשמה/כניסה)
     async requestVerification(phone, ip, intent = 'register') {
         if (!this.yemotToken) {
             return { success: false, message: "שגיאת שרת: חסר טוקן התחברות לימות המשיח." };
@@ -80,7 +81,6 @@ export class VerificationSystem {
         if (blockCheck) {
             let msg = `הפעולה נחסמה על ידי ההנהלה. סיבה: ${blockCheck.reason || 'ללא סיבה'}.`;
             if (blockCheck.blocked_until) {
-                // תיקון באג ה-NaN: הוספת T לפני חישוב אזור הזמן Z
                 const safeDateStr = blockCheck.blocked_until.replace(' ', 'T') + 'Z';
                 const timeLeft = Math.floor((new Date(safeDateStr) - now) / 1000);
                 msg += ` החסימה תשתחרר בעוד ${this.formatTimeRemaining(timeLeft)}.`;
@@ -103,7 +103,6 @@ export class VerificationSystem {
         if (recentSession) {
             if (recentSession.status !== 'verified' && recentSession.status !== 'used') {
                 attemptsCount = recentSession.attempts_count + 1;
-                // תיקון תאימות תאריך עבור sqlite
                 const safeLastAttempt = recentSession.created_at.replace(' ', 'T') + 'Z';
                 const lastAttemptTime = new Date(safeLastAttempt);
                 const cooldownMinutes = this.getCooldownMinutes(recentSession.attempts_count);
@@ -152,7 +151,144 @@ export class VerificationSystem {
         }
     }
 
-    // 2. אימות הקוד
+    // --- חדש: בקשת איפוס סיסמה ושליחת קוד אימות במייל דרך Resend ---
+    async requestPasswordReset(identifier, ip, env) {
+        if (!env.RESEND_API_KEY) {
+            return { success: false, message: "שגיאת שרת: חסר מפתח אימות למערכת האימיילים (RESEND_API_KEY)." };
+        }
+
+        const now = new Date();
+
+        // חיפוש המשתמש לפי אימייל או מספר טלפון
+        const user = await this.db.prepare(
+            "SELECT phone, email FROM users WHERE phone = ? OR email = ?"
+        ).bind(identifier, identifier).first();
+
+        if (!user) {
+            return { success: false, message: "לא נמצא משתמש רשום עם פרטים אלו במערכת." };
+        }
+        if (!user.email) {
+            return { success: false, message: "לא מוגדרת כתובת אימייל מעודכנת לחשבון זה. אנא פנה למנהל המערכת." };
+        }
+
+        // בדיקת חסימות כלליות
+        const blockCheck = await this.db.prepare(
+            `SELECT * FROM verification_blocks 
+             WHERE (block_type = 'phone' AND block_value = ?) OR (block_type = 'ip' AND block_value = ?)
+             AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)`
+        ).bind(user.phone, ip).first();
+
+        if (blockCheck) {
+            let msg = `הפעולה נחסמה על ידי ההנהלה. סיבה: ${blockCheck.reason || 'ללא סיבה'}.`;
+            if (blockCheck.blocked_until) {
+                const safeDateStr = blockCheck.blocked_until.replace(' ', 'T') + 'Z';
+                const timeLeft = Math.floor((new Date(safeDateStr) - now) / 1000);
+                msg += ` החסימה תשתחרר בעוד ${this.formatTimeRemaining(timeLeft)}.`;
+            } else {
+                msg += " החסימה הינה לצמיתות.";
+            }
+            await this.logAction('BLOCKED', user.phone, ip, 'RESET_REJECTED', `ניסיון איפוס נחסם עקב רשימה שחורה`);
+            return { success: false, message: msg };
+        }
+
+        // הגבלת קצב (Rate Limiting)
+        const recentSession = await this.db.prepare(
+            `SELECT * FROM verification_sessions 
+             WHERE phone = ? AND intent = 'reset' AND created_at > datetime('now', '-1 day')
+             ORDER BY created_at DESC LIMIT 1`
+        ).bind(user.phone).first();
+
+        let attemptsCount = 1;
+        if (recentSession) {
+            if (recentSession.status !== 'verified' && recentSession.status !== 'used') {
+                attemptsCount = recentSession.attempts_count + 1;
+                const safeLastAttempt = recentSession.created_at.replace(' ', 'T') + 'Z';
+                const lastAttemptTime = new Date(safeLastAttempt);
+                const cooldownMinutes = this.getCooldownMinutes(recentSession.attempts_count);
+                const nextAllowedTime = new Date(lastAttemptTime.getTime() + cooldownMinutes * 60000);
+
+                if (now < nextAllowedTime) {
+                    const timeLeft = Math.floor((nextAllowedTime - now) / 1000);
+                    return { success: false, message: `נשלחו יותר מדי בקשות איפוס. אנא נסו שוב בעוד ${this.formatTimeRemaining(timeLeft)}.` };
+                }
+            }
+        }
+
+        // שליפת שם המשתמש העדכני מימות המשיח
+        const userName = await getNameFromIni(user.phone, this.yemotToken);
+        const displayName = userName || "משתמש מערכת";
+
+        // יצירת קוד אימות רנדומלי בן 6 ספרות וסשן חדש
+        const verifyCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const sessionId = crypto.randomUUID();
+        const codeExpiresAt = new Date(now.getTime() + 10 * 60000); // 10 דקות תוקף
+
+        try {
+            // שמירת הסשן במסד הנתונים עם intent של reset
+            await this.db.prepare(
+                `INSERT INTO verification_sessions (id, phone, ip_address, verify_code, intent, attempts_count, code_expires_at) 
+                 VALUES (?, ?, ?, ?, 'reset', ?, ?)`
+            ).bind(sessionId, user.phone, ip, verifyCode, attemptsCount, codeExpiresAt.toISOString().replace('T', ' ').substring(0, 19)).run();
+
+            // בניית המייל המעוצב בעברית (RTL)
+            const emailHtml = `
+                <div style="direction: rtl; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 500px; margin: 0 auto; padding: 25px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; text-align: center; color: #1a202c; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+                    <h2 style="color: #2b6cb0; margin-bottom: 20px; font-size: 24px;">בקשה לאיפוס סיסמה</h2>
+                    <p style="font-size: 16px; margin-bottom: 10px; color: #4a5568; text-align: right;">שלום <strong>${displayName}</strong>,</p>
+                    <p style="font-size: 16px; margin-bottom: 20px; color: #4a5568; text-align: right; line-height: 1.5;">קיבלנו בקשה לאיפוס הסיסמה עבור חשבונך במערכת סלומון מכתובת ה-IP המאובטחת: <code style="background:#f1f5f9; padding:3px 6px; border-radius:4px; font-family: monospace;">${ip}</code>.</p>
+                    <p style="font-size: 16px; margin-bottom: 25px; color: #4a5568; text-align: right;">להמשך תהליך איפוס הסיסמה, אנא הזן את קוד האימות החד-פעמי הבא באתר:</p>
+                    
+                    <div style="font-size: 32px; font-weight: bold; background-color: #f7fafc; border: 2px dashed #cbd5e0; padding: 12px 30px; display: inline-block; letter-spacing: 4px; margin-bottom: 25px; color: #2d3748; border-radius: 8px;">
+                        ${verifyCode}
+                    </div>
+                    
+                    <p style="font-size: 14px; color: #718096; margin-bottom: 5px;">הקוד יהיה בתוקף ל-10 הדקות הקרובות בלבד.</p>
+                    <p style="font-size: 13px; color: #a0aec0; margin-top: 0;">אם לא ביקשת לאפס את הסיסמה שלך, אל דאגה – ניתן להתעלם מאימייל זה בבטחה.</p>
+                    
+                    <hr style="border: 0; border-top: 1px solid #edf2f7; margin: 30px 0;">
+                    <p style="font-size: 12px; color: #a0aec0; margin: 0;">נשלח באופן אוטומטי על ידי מערכת סלומון &copy; ${new Date().getFullYear()}</p>
+                </div>
+            `;
+
+            const emailText = `שלום ${displayName},\n\nקיבלנו בקשה לאיפוס הסיסמה לחשבונך מכתובת ה-IP: ${ip}.\n\nקוד האימות שלך הוא: ${verifyCode}\n\nהקוד בתוקף ל-10 דקות.\nאם לא ביקשת זאת, פשוט התעלם מהודעה זו.`;
+
+            // שליחה ישירה ל-API של Resend
+            const resendResponse = await fetch('https://api.resend.com/emails', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    from: 'סלומון <salamon@smti.uk>',
+                    to: [user.email],
+                    subject: 'איפוס סיסמה - מערכת סלומון',
+                    html: emailHtml,
+                    text: emailText
+                })
+            });
+
+            if (!resendResponse.ok) {
+                const errData = await resendResponse.json();
+                throw new Error(`Resend API Error: ${JSON.stringify(errData)}`);
+            }
+
+            await this.logAction('INFO', user.phone, ip, 'RESET_CODE_SENT', `קוד איפוס נשלח בהצלחה למייל`);
+
+            return { 
+                success: true, 
+                message: "קוד אימות לאיפוס הסיסמה נשלח לכתובת האימייל המעודכנת בחשבונך.",
+                sessionId: sessionId,
+                phone: user.phone // מחזירים את הטלפון כדי שהקליינט יוכל להשתמש בו ב-verify/check
+            };
+
+        } catch (error) {
+            await this.logAction('ERROR', user.phone, ip, 'RESET_SYSTEM_ERROR', error.message);
+            return { success: false, message: "שגיאה פנימית בשליחת קוד האימות למייל." };
+        }
+    }
+
+    // 2. אימות הקוד (מתאים גם לצינתוק וגם לאימייל!)
     async verifyCode(sessionId, phone, ip, code) {
         const session = await this.db.prepare(
             `SELECT * FROM verification_sessions WHERE id = ? AND phone = ? AND status = 'pending'`
@@ -168,13 +304,12 @@ export class VerificationSystem {
 
         if (now > expiryTime) {
             await this.db.prepare(`UPDATE verification_sessions SET status = 'expired' WHERE id = ?`).bind(sessionId).run();
-            return { success: false, message: "זמן הזנת הקוד פג (עברו יותר מ-10 דקות). אנא בקשו צינתוק מחדש." };
+            return { success: false, message: "זמן הזנת הקוד פג (עברו יותר מ-10 דקות). אנא בקשו קוד מחדש." };
         }
 
         if (session.verify_code !== code) {
             const newAttempts = session.verify_attempts + 1;
             
-            // עד 5 ניסיונות
             if (newAttempts >= 5) {
                 await this.db.prepare(`UPDATE verification_sessions SET status = 'expired', verify_attempts = ? WHERE id = ?`).bind(newAttempts, sessionId).run();
                 await this.logAction('BLOCKED', phone, ip, 'VERIFY_CODE', '5 ניסיונות שגויים - הבקשה נמחקה');
@@ -206,14 +341,13 @@ export class VerificationSystem {
 
         return {
             success: true,
-            message: "הטלפון אומת בהצלחה!",
+            message: "הקוד אומת בהצלחה!",
             token: authToken,
             intent: session.intent
         };
     }
 
     // --- פעולות ניהול ---
-
     async getLogs(limit = 100, offset = 0) {
         try {
             const { results } = await this.db.prepare(
@@ -241,18 +375,16 @@ export class VerificationSystem {
         if (durationValue && durationUnit) {
             const now = new Date();
             let ms = 0;
-            // חישוב המרה לפי היחידה הנבחרת
             if (durationUnit === 'seconds') ms = durationValue * 1000;
             else if (durationUnit === 'minutes') ms = durationValue * 60000;
             else if (durationUnit === 'hours') ms = durationValue * 3600000;
             else if (durationUnit === 'days') ms = durationValue * 86400000;
-            else if (durationUnit === 'months') ms = durationValue * 30 * 86400000; // חודש = 30 ימים
+            else if (durationUnit === 'months') ms = durationValue * 30 * 86400000;
             
             const futureDate = new Date(now.getTime() + ms);
             blockedUntil = futureDate.toISOString().replace('T', ' ').substring(0, 19);
         }
 
-        // בדיקה האם כבר קיימת חסימה למספר/כתובת הזה (במקום לשכפל - נעדכן)
         const existing = await this.db.prepare(
             `SELECT id FROM verification_blocks WHERE block_type = ? AND block_value = ?`
         ).bind(type, value).first();
@@ -261,34 +393,30 @@ export class VerificationSystem {
             await this.db.prepare(
                 `UPDATE verification_blocks SET reason = ?, blocked_until = ? WHERE id = ?`
             ).bind(reason, blockedUntil, existing.id).run();
-            await this.logAction('INFO', value, ip, 'ADMIN_BLOCK_UPDATE', `חסימה קיימת עברה עדכון (זמן: ${durationValue || 'צמיתות'} ${durationUnit || ''})`);
             return { success: true, message: `החסימה עבור ${value} עודכנה בהצלחה במערכת.` };
         } else {
             await this.db.prepare(
                 `INSERT INTO verification_blocks (block_type, block_value, reason, blocked_until) VALUES (?, ?, ?, ?)`
             ).bind(type, value, reason, blockedUntil).run();
-            await this.logAction('INFO', value, ip, 'ADMIN_BLOCK_CREATE', `חסימה חדשה נוצרה`);
             return { success: true, message: `החסימה עבור ${value} נוצרה בהצלחה במערכת.` };
         }
     }
 
     async unblockTarget(target, ip) {
-        // יכול לקבל או ID מספר של שורה, או טקסט שזה למעשה ה-IP / טלפון בעצמו.
         const result = await this.db.prepare(
             `DELETE FROM verification_blocks WHERE id = ? OR block_value = ?`
         ).bind(target, String(target)).run();
         
         if (result.meta && result.meta.changes > 0) {
-            await this.logAction('INFO', String(target), ip, 'ADMIN_UNBLOCK', `חסימה הוסרה`);
             return { success: true, message: "החסימה הוסרה בהצלחה ממערכת הניהול." };
         } else {
-            return { success: false, error: "לא נמצאה חסימה התואמת לערך זה (ניתן להזין ID, טלפון או IP)." };
+            return { success: false, error: "לא נמצאה חסימה התואמת לערך זה." };
         }
     }
 
     async cleanOldLogs() {
         try {
-            const result = await this.db.prepare(
+            await this.db.prepare(
                 `DELETE FROM verification_logs WHERE timestamp < datetime('now', '-30 days')`
             ).run();
             return { success: true, message: "נוקו לוגים היסטוריים." };
