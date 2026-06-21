@@ -235,7 +235,7 @@ export class VerificationSystem {
                 <div style="direction: rtl; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 500px; margin: 0 auto; padding: 25px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; text-align: center; color: #1a202c; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
                     <h2 style="color: #2b6cb0; margin-bottom: 20px; font-size: 24px;">בקשה לאיפוס סיסמה</h2>
                     <p style="font-size: 16px; margin-bottom: 10px; color: #4a5568; text-align: right;">שלום <strong>${displayName}</strong>,</p>
-                    <p style="font-size: 16px; margin-bottom: 20px; color: #4a5568; text-align: right; line-height: 1.5;">קיבלנו בקשה לאיפוס הסיסמה עבור חשבונך באתר עכשיו סלומון מכתובת ה-IP: <code style="background:#f1f5f9; padding:3px 6px; border-radius:4px; font-family: monospace;">${ip}</code>.</p>
+                    <p style="font-size: 16px; margin-bottom: 20px; color: #4a5568; text-align: right; line-height: 1.5;">קיבלנו בקשה לאיפוס הסיסמה עבור חשבונך באתר עכשיו סלומון מהכתובת: <code style="background:#f1f5f9; padding:3px 6px; border-radius:4px; font-family: monospace;">${ip}</code>.</p>
                     <p style="font-size: 16px; margin-bottom: 25px; color: #4a5568; text-align: right;">להמשך תהליך איפוס הסיסמה, אנא הזן את קוד האימות החד-פעמי הבא:</p>
                     
                     <div style="font-size: 32px; font-weight: bold; background-color: #f7fafc; border: 2px dashed #cbd5e0; padding: 12px 30px; display: inline-block; letter-spacing: 4px; margin-bottom: 25px; color: #2d3748; border-radius: 8px;">
