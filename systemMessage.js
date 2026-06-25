@@ -1,30 +1,25 @@
 // systemMessage.js
+import { authenticateUser } from './auth.js';
 
 /**
  * 1. שליפת מודעת המערכת עבור משתמש קצה (POST)
- * נתיב מיועד: /api/system-message
  */
 export async function handleGetSystemMessage(request, env) {
     try {
         const body = await request.json();
         const { userToken } = body;
 
-        // בדיקת קיומו של הטוקן
         if (!userToken) {
             return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
         }
 
-        // פיצול ואימות מול טבלת המשתמשים (בדומה לשאר חלקי המערכת)
-        const [identifier, password] = userToken.split(':');
-        const user = await env.DB.prepare(
-            "SELECT 1 FROM users WHERE (phone = ? OR email = ?) AND password = ?"
-        ).bind(identifier, identifier, password).first();
+        // אימות חכם גלובלי
+        const user = await authenticateUser(env.DB, userToken);
 
         if (!user) {
             return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
         }
 
-        // שליפת המודעה הקבועה (id=1) ממסד הנתונים
         const messageRow = await env.DB.prepare(
             "SELECT html_content FROM system_messages WHERE id = 1"
         ).first();
@@ -43,19 +38,16 @@ export async function handleGetSystemMessage(request, env) {
 
 /**
  * 2. עדכון מודעת המערכת על ידי מנהל (POST)
- * נתיב מיועד: /api/admin/system-message/update
  */
 export async function handleAdminUpdateSystemMessage(request, env) {
     try {
         const body = await request.json();
         const { adminToken, htmlContent } = body;
 
-        // בדיקת קיומו של טוקן המנהל
         if (!adminToken) {
             return Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
         }
 
-        // פיצול ואימות מול טבלת המנהלים
         const [username, adminPass] = adminToken.split(':');
         const admin = await env.DB.prepare(
             "SELECT 1 FROM admins WHERE username = ? AND password = ?"
@@ -69,7 +61,6 @@ export async function handleAdminUpdateSystemMessage(request, env) {
             return Response.json({ error: "חסר תוכן המודעה לעדכון" }, { status: 400 });
         }
 
-        // עדכון הרשומה הקבועה או יצירתה מחדש במידה ונמחקה (UPSERT חסין תקלות)
         await env.DB.prepare(`
             INSERT INTO system_messages (id, html_content) 
             VALUES (1, ?) 
