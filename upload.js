@@ -1,6 +1,7 @@
 // upload.js
 import { getNameFromIni } from './yemot.js';
 import { getIsraelTimeForDB } from './timeUtils.js';
+import { authenticateUser } from './auth.js';
 
 export async function handleUploadMessage(request, env) {
     try {
@@ -15,10 +16,8 @@ export async function handleUploadMessage(request, env) {
             return Response.json({ error: "חסר קובץ שמע להעלאה" }, { status: 400 });
         }
 
-        const [identifier, password] = userToken.split(':');
-        const user = await env.DB.prepare(
-            "SELECT phone, can_upload, can_record FROM users WHERE (phone = ? OR email = ?) AND password = ?"
-        ).bind(identifier, identifier, password).first();
+        // אימות חכם גלובלי
+        const user = await authenticateUser(env.DB, userToken);
 
         if (!user) {
             return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
@@ -60,14 +59,12 @@ export async function handleUploadMessage(request, env) {
 
         const currentTimeIsrael = getIsraelTimeForDB();
         
-        // חילוץ שם הקובץ (למשל: 3666.wav) מתוך ה-path שימות החזירו
         let savedFileName = null;
         if (data.path) {
             const parts = data.path.split('/');
-            savedFileName = parts[parts.length - 1]; // "3666.wav"
+            savedFileName = parts[parts.length - 1]; 
         }
 
-        // רישום ההעלאה + שם הקובץ בטבלה
         try {
             await env.DB.prepare(
                 `INSERT INTO upload_events (phone, upload_time, tzintuk_sent, file_name) VALUES (?, ?, 0, ?)`
@@ -81,7 +78,6 @@ export async function handleUploadMessage(request, env) {
 
         if (data.path) {
             const txtPath = data.path.replace(/^ivr\//, 'ivr2:/').replace(/\.wav$/, '.txt');
-            
             const getTxtUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=${encodeURIComponent(txtPath)}`;
             let existingText = "";
             
