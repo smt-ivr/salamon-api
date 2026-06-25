@@ -1,5 +1,6 @@
 // auth.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
+import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
 
 // פונקציית עזר גלובלית לאימות משתמש
 export async function authenticateUser(db, userToken) {
@@ -18,23 +19,20 @@ export async function authenticateUser(db, userToken) {
     const session = await db.prepare("SELECT * FROM user_tokens WHERE id = ?").bind(userToken).first();
     if (!session) return null;
 
-    const now = new Date();
     if (session.token_type === 'temporary') {
-        const safeExpiry = session.expires_at.replace(' ', 'T') + 'Z';
-        if (now > new Date(safeExpiry)) {
+        if (isPastIsraelTime(session.expires_at)) {
             await db.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
             return null;
         }
 
-        const newExpiry = new Date(now.getTime() + 30 * 60 * 1000);
-        const newExpiryStr = newExpiry.toISOString().replace('T', ' ').substring(0, 19);
-        const nowStr = now.toISOString().replace('T', ' ').substring(0, 19);
+        const newExpiryStr = getFutureIsraelTimeForDB(30);
+        const nowStr = getIsraelTimeForDB();
 
         await db.prepare(
             "UPDATE user_tokens SET expires_at = ?, last_used_at = ? WHERE id = ?"
         ).bind(newExpiryStr, nowStr, userToken).run();
     } else {
-        const nowStr = now.toISOString().replace('T', ' ').substring(0, 19);
+        const nowStr = getIsraelTimeForDB();
         await db.prepare(
             "UPDATE user_tokens SET last_used_at = ? WHERE id = ?"
         ).bind(nowStr, userToken).run();
@@ -132,9 +130,11 @@ export async function handleRegister(request, env) {
 
     try {
         const safeEmail = email || null; // מניעת undefined
+        // מוסיפים created_at יזום כדי לעקוף את UTC הדיפולטי של המסד
+        const nowIsraelStr = getIsraelTimeForDB();
         await env.DB.prepare(
-            `INSERT INTO users (phone, email, password, can_record, can_upload) VALUES (?, ?, ?, 1, 0)`
-        ).bind(phone, safeEmail, password).run();
+            `INSERT INTO users (phone, email, password, can_record, can_upload, created_at) VALUES (?, ?, ?, 1, 0, ?)`
+        ).bind(phone, safeEmail, password, nowIsraelStr).run();
 
         await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
 
@@ -170,13 +170,11 @@ export async function handleLogin(request, env) {
 
     const sessionToken = crypto.randomUUID();
     const tokenType = rememberMe ? 'permanent' : 'temporary';
-    const now = new Date();
-    const createdAtStr = now.toISOString().replace('T', ' ').substring(0, 19);
+    const createdAtStr = getIsraelTimeForDB();
     
     let expiresAtStr = null;
     if (tokenType === 'temporary') {
-        const expiresAt = new Date(now.getTime() + 30 * 60 * 1000); 
-        expiresAtStr = expiresAt.toISOString().replace('T', ' ').substring(0, 19);
+        expiresAtStr = getFutureIsraelTimeForDB(30);
     }
 
     await env.DB.prepare(
@@ -353,8 +351,7 @@ export async function handleGoogleLogin(request, env) {
 
         // שלב ג': המשתמש נמצא, יצירת טוקן חיבור קבוע (permanent) עבור זכור אותי
         const sessionToken = crypto.randomUUID();
-        const now = new Date();
-        const createdAtStr = now.toISOString().replace('T', ' ').substring(0, 19);
+        const createdAtStr = getIsraelTimeForDB();
         const expiresAtStr = null; // null מייצג חיבור לצמיתות (permanent)
 
         // ניקוי טוקנים ישנים בשביל לשמור על סדר במסד הנתונים
