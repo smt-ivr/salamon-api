@@ -4,7 +4,8 @@ import {
     handleCheckIdentifier, 
     handleRegister, 
     handleLogin, 
-    handleGetProfile,    // הוספנו את הנתיב למשיכת פרופיל משתמש
+    handleGoogleLogin,   // ייבוא פונקציית גוגל החדשה
+    handleGetProfile,    
     handleUpdateProfile,
     handleResetPasswordConfirm,
     handleLogout,         
@@ -164,7 +165,10 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/login")) {
                 response = await handleLogin(request, env);
             } 
-            else if (request.method === "POST" && pathname.endsWith("/api/user")) { // <--- הנתיב החדש!
+            else if (request.method === "POST" && pathname.endsWith("/api/login/google")) { // ניתוב התחברות גוגל החדש
+                response = await handleGoogleLogin(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/user")) { 
                 response = await handleGetProfile(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/logout")) { 
