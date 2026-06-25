@@ -4,10 +4,11 @@ import {
     handleCheckIdentifier, 
     handleRegister, 
     handleLogin, 
+    handleGetProfile,    // הוספנו את הנתיב למשיכת פרופיל משתמש
     handleUpdateProfile,
     handleResetPasswordConfirm,
-    handleLogout,         // ייבוא נתיב הניתוק החדש
-    authenticateUser      // ייבוא פונקציית האימות המרכזית
+    handleLogout,         
+    authenticateUser      
 } from './auth.js';
 
 import {
@@ -20,10 +21,7 @@ import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
-
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
-
-// ייבוא מודול הודעות המערכת (המודעה באתר)
 import { handleGetSystemMessage, handleAdminUpdateSystemMessage } from './systemMessage.js';
 
 export default {
@@ -44,13 +42,9 @@ export default {
 
         try {
             let response;
-            
-            // אתחול מערכת האימות
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
-            // ==========================================
-            // נתיבי מודעות מערכת (System Message)
-            // ==========================================
+            // מודעות מערכת (System Message)
             if (request.method === "POST" && pathname.endsWith("/api/system-message")) {
                 response = await handleGetSystemMessage(request, env);
             }
@@ -58,9 +52,7 @@ export default {
                 response = await handleAdminUpdateSystemMessage(request, env);
             }
             
-            // ==========================================
-            // נתיבי מערכת שמע הודעות, צינתוקים ומחיקה
-            // ==========================================
+            // מערכת הודעות קוליות
             else if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
                 response = await handleGetMessages(request, env);
             }
@@ -71,15 +63,13 @@ export default {
                 response = await handleStreamMessage(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/tzintuk")) {
-                const body = await request.json();
+                const body = await request.json().catch(() => ({}));
                 if (!body.userToken) {
                     response = Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
                 } else {
-                    // שימוש בפונקציית האימות החכמה
                     const user = await authenticateUser(env.DB, body.userToken);
-                    
                     if (!user) {
-                        response = Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
+                        response = Response.json({ error: "הרשאות משתמש לא חוקיות או פג תוקף" }, { status: 403 });
                     } else {
                         const result = await processTzintukRequest(env, user.phone, env.YEMOT_TOKEN);
                         response = Response.json(result, { status: result.success ? 200 : 400 });
@@ -90,15 +80,12 @@ export default {
                 response = await handleCheckDeleteEligibility(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/delete")) {
-                response = await handleDeleteMessage(request, env, userIp); // העברנו את ה-IP לפונקציה
+                response = await handleDeleteMessage(request, env, userIp); 
             }
 
-            // ==========================================
-            // נתיבי מערכת האימות (צינתוקים ומיילים) - הרשמה וכניסה
-            // ==========================================
+            // מערכת האימות - צינתוקים ומיילים
             else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
-                const body = await request.json();
-                
+                const body = await request.json().catch(() => ({}));
                 if (body.intent === 'reset') {
                     const identifier = body.identifier || body.phone;
                     if (!identifier) {
@@ -117,7 +104,7 @@ export default {
                 }
             }
             else if (request.method === "POST" && pathname.endsWith("/api/verify/check")) {
-                const body = await request.json();
+                const body = await request.json().catch(() => ({}));
                 if (!body.sessionId || !body.phone || !body.code) {
                     response = Response.json({ error: "חסרים פרטי אימות (sessionId, phone, code)" }, { status: 400 });
                 } else {
@@ -126,18 +113,16 @@ export default {
                 }
             }
 
-            // ==========================================
-            // נתיבי מערכת אימות - ניהול בלבד (Admin)
-            // ==========================================
+            // מנהל - Admin
             else if (pathname.includes("/api/verify/admin/")) {
                 if (request.method !== "POST") {
                     response = Response.json({ error: "מתודה לא מורשית" }, { status: 405 });
                 } else {
-                    const body = await request.json();
+                    const body = await request.json().catch(() => ({}));
                     const adminToken = body.adminToken;
                     
-                    if (!adminToken) {
-                        response = Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
+                    if (!adminToken || !adminToken.includes(':')) {
+                        response = Response.json({ error: "חסר אימות מנהל או פורמט שגוי" }, { status: 401 });
                     } else {
                         const [username, adminPass] = adminToken.split(':');
                         const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
@@ -169,9 +154,7 @@ export default {
                 }
             }
 
-            // ==========================================
-            // נתיבי משתמשים רגילים (auth.js)
-            // ==========================================
+            // נתיבי משתמשים (User Management)
             else if (request.method === "POST" && pathname.endsWith("/api/check-identifier")) {
                 response = await handleCheckIdentifier(request, env);
             } 
@@ -181,7 +164,10 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/login")) {
                 response = await handleLogin(request, env);
             } 
-            else if (request.method === "POST" && pathname.endsWith("/api/logout")) { // נתיב חדש להתנתקות
+            else if (request.method === "POST" && pathname.endsWith("/api/user")) { // <--- הנתיב החדש!
+                response = await handleGetProfile(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/logout")) { 
                 response = await handleLogout(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
@@ -191,9 +177,7 @@ export default {
                 response = await handleResetPasswordConfirm(request, env);
             }
             
-            // ==========================================
-            // נתיבי ניהול (admin.js)
-            // ==========================================
+            // ממשק מנהל לניהול משתמשים
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) {
                 response = await handleAdminLogin(request, env);
             }
