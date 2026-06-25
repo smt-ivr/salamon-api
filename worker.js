@@ -5,7 +5,9 @@ import {
     handleRegister, 
     handleLogin, 
     handleUpdateProfile,
-    handleResetPasswordConfirm
+    handleResetPasswordConfirm,
+    handleLogout,         // ייבוא נתיב הניתוק החדש
+    authenticateUser      // ייבוא פונקציית האימות המרכזית
 } from './auth.js';
 
 import {
@@ -73,8 +75,8 @@ export default {
                 if (!body.userToken) {
                     response = Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
                 } else {
-                    const [identifier, password] = body.userToken.split(':');
-                    const user = await env.DB.prepare("SELECT phone FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
+                    // שימוש בפונקציית האימות החכמה
+                    const user = await authenticateUser(env.DB, body.userToken);
                     
                     if (!user) {
                         response = Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
@@ -88,7 +90,7 @@ export default {
                 response = await handleCheckDeleteEligibility(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/delete")) {
-                response = await handleDeleteMessage(request, env);
+                response = await handleDeleteMessage(request, env, userIp); // העברנו את ה-IP לפונקציה
             }
 
             // ==========================================
@@ -97,7 +99,6 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
                 const body = await request.json();
                 
-                // התאמה חכמה: אם האינטנט הוא איפוס סיסמה (reset), נשתמש במנגנון המייל החדש
                 if (body.intent === 'reset') {
                     const identifier = body.identifier || body.phone;
                     if (!identifier) {
@@ -107,7 +108,6 @@ export default {
                         response = Response.json(result, { status: result.success ? 200 : 400 });
                     }
                 } else {
-                    // ברירת מחדל: צינתוק טלפוני להרשמה/כניסה
                     if (!body.phone) {
                         response = Response.json({ error: "חסר מספר טלפון" }, { status: 400 });
                     } else {
@@ -181,10 +181,12 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/login")) {
                 response = await handleLogin(request, env);
             } 
+            else if (request.method === "POST" && pathname.endsWith("/api/logout")) { // נתיב חדש להתנתקות
+                response = await handleLogout(request, env);
+            }
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
                 response = await handleUpdateProfile(request, env);
             }
-            // ---> חדש: נתיב השלמת איפוס סיסמה <---
             else if (request.method === "POST" && pathname.endsWith("/api/reset-password/confirm")) {
                 response = await handleResetPasswordConfirm(request, env);
             }
