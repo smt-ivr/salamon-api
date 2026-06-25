@@ -1,4 +1,6 @@
 // messages.js
+import { checkPhoneStatus, getNameFromIni } from './yemot.js';
+import { authenticateUser } from './auth.js'; 
 
 // 1. קבלת רשימת הקבצים + שליפת שם המקליט מתוך קובץ ה-TXT
 export async function handleGetMessages(request, env) {
@@ -8,15 +10,12 @@ export async function handleGetMessages(request, env) {
     const FOLDER_PATH = 'ivr2:/1/2'; 
 
     if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
-    const [identifier, password] = userToken.split(':');
     
-    // שינוי: שולפים את ה-phone מהמסד כדי שיהיה זמין לנו להשוואה בהמשך
-    const user = await env.DB.prepare("SELECT phone FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
+    // שינוי לאימות חכם תואם טוקנים וסיסמאות
+    const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
 
     const token = env.YEMOT_TOKEN;
-    
-    // הגבלנו ל-40 כדי לא לחרוג ממגבלת ה-50 בקשות של Cloudflare שעלולה לרסק את השרת
     const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=40`;
     
     try {
@@ -27,45 +26,35 @@ export async function handleGetMessages(request, env) {
             return Response.json({ error: "שגיאה בקבלת נתונים מימות המשיח" }, { status: 400 });
         }
 
-        // סינון קבצים: רק קבצי שמע ששמם מורכב מספרות בלבד
         const rawMessages = (data.files || []).filter(file => {
             if (file.fileType !== 'AUDIO') return false;
             return /^\d+\.(wav|mp3)$/i.test(file.name);
         });
 
-        // מעבר על כל קובץ שמע ושליפת קובץ ה-TXT שלו (במקביל, לחיסכון בזמן)
         const messages = await Promise.all(rawMessages.map(async (file) => {
-            const fileId = file.name.split('.')[0]; // שליפת המספר בלבד
+            const fileId = file.name.split('.')[0]; 
             const txtUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=${encodeURIComponent(FOLDER_PATH + '/' + fileId + '.txt')}`;
             
             let recorderName = "";
-            let recorderPhone = ""; // משתנה חדש לשמירת מספר הטלפון של ההודעה מה-TXT
+            let recorderPhone = ""; 
 
             try {
                 const txtRes = await fetch(txtUrl);
                 if (txtRes.ok) {
                     const txtData = await txtRes.json();
                     if (txtData.responseStatus === 'OK' && txtData.contents) {
-                        
-                        // חילוץ מספר הטלפון מתוך הטקסט לצורך בדיקת הבעלות
                         if (txtData.contents.includes('Phone-')) {
                             recorderPhone = txtData.contents.split('Phone-')[1].split('-')[0].trim();
                         }
-
-                        // חילוץ השם מתוך הטקסט (נשאר בדיוק לפי הלוגיקה המקורית שלך)
                         if (txtData.contents.includes('ValName-')) {
                             recorderName = txtData.contents.split('ValName-')[1].trim();
                         } else if (recorderPhone) {
-                            // אם אין שם, ניקח את הטלפון כגיבוי
                             recorderName = recorderPhone;
                         }
                     }
                 }
-            } catch (e) {
-                // מתעלמים משגיאות בקובץ הטקסט כדי לא להרוס את השמעת הקובץ עצמו
-            }
+            } catch (e) {}
 
-            // בדיקה האם ההודעה שייכת למשתמש הנוכחי שמבצע את הבקשה
             const isOutgoing = !!(user.phone && (recorderPhone === user.phone || file.phone === user.phone));
 
             return {
@@ -73,8 +62,8 @@ export async function handleGetMessages(request, env) {
                 size: file.size,
                 durationStr: file.durationStr,
                 mtime: file.mtime,
-                valName: recorderName || file.phone || "מערכת / לא מזוהה", // שם המקליט שהוצאנו
-                isOutgoing: isOutgoing // הפרמטר החדש שביקשת
+                valName: recorderName || file.phone || "מערכת / לא מזוהה",
+                isOutgoing: isOutgoing 
             };
         }));
 
@@ -84,7 +73,7 @@ export async function handleGetMessages(request, env) {
     }
 }
 
-// 2. הזרמת הקובץ לנגן - תמיכה מלאה באייפון ובקבצים גדולים ללא חריגת זיכרון (Streaming Range)
+// 2. הזרמת הקובץ לנגן
 export async function handleStreamMessage(request, env) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
@@ -101,8 +90,8 @@ export async function handleStreamMessage(request, env) {
     const filePath = `ivr2:/1/2/${fileId}.wav`;
     const fileName = `${fileId}.wav`;
 
-    const [identifier, password] = userToken.split(':');
-    const user = await env.DB.prepare("SELECT 1 FROM users WHERE (phone = ? OR email = ?) AND password = ?").bind(identifier, identifier, password).first();
+    // שינוי לאימות חכם תואם טוקנים וסיסמאות
+    const user = await authenticateUser(env.DB, userToken);
     if (!user) {
         return new Response("גישה נדחתה: משתמש לא מורשה", { status: 403 });
     }
