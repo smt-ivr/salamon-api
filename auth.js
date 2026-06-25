@@ -202,7 +202,7 @@ export async function handleLogin(request, env) {
     });
 }
 
-// 4. שליפת פרופיל משתמש (נתיב חדש!)
+// 4. שליפת פרופיל משתמש
 export async function handleGetProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken } = body;
@@ -314,5 +314,74 @@ export async function handleResetPasswordConfirm(request, env) {
         return Response.json({ success: true, message: "הסיסמה שלך אופסה ועודכנה בהצלחה!" });
     } catch (e) {
         return Response.json({ error: "שגיאת שרת פנימית בעת עדכון הסיסמה החדשה." }, { status: 500 });
+    }
+}
+
+// 8. התחברות באמצעות גוגל (טוקן קבוע - זכור אותי)
+export async function handleGoogleLogin(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const { token } = body;
+
+    if (!token) {
+        return Response.json({ error: "טוקן אימות של גוגל חסר" }, { status: 400 });
+    }
+
+    try {
+        // שלב א': אימות הטוקן מול שרתי ה-OAuth הרשמיים של גוגל
+        const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
+        const googleData = await googleRes.json();
+
+        if (!googleRes.ok || !googleData.email) {
+            return Response.json({ error: "אימות מול שרתי גוגל נכשל או שהמשתמש חסם גישה לאימייל" }, { status: 401 });
+        }
+
+        // אבטחה: וידוא קליינט תואם ל-Client ID של האפליקציה שלך
+        if (googleData.aud !== "89500817024-tbvsuu4dci6bqh173l65ua9lc65pe24p.apps.googleusercontent.com") {
+            return Response.json({ error: "בקשה חסומה: מזהה אפליקציה (Client ID) לא תואם" }, { status: 403 });
+        }
+
+        const email = googleData.email;
+
+        // שלב ב': שליפת המשתמש לפי כתובת האימייל בלבד
+        const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+
+        if (!user) {
+            return Response.json({ 
+                error: `כתובת האימייל (${email}) אינה משויכת לאף חשבון במערכת. עלייך להירשם תחילה דרך מספר טלפון.` 
+            }, { status: 404 });
+        }
+
+        // שלב ג': המשתמש נמצא, יצירת טוקן חיבור קבוע (permanent) עבור זכור אותי
+        const sessionToken = crypto.randomUUID();
+        const now = new Date();
+        const createdAtStr = now.toISOString().replace('T', ' ').substring(0, 19);
+        const expiresAtStr = null; // null מייצג חיבור לצמיתות (permanent)
+
+        // ניקוי טוקנים ישנים בשביל לשמור על סדר במסד הנתונים
+        await env.DB.prepare(
+            `DELETE FROM user_tokens 
+             WHERE phone = ? 
+               AND id NOT IN (
+                   SELECT id FROM user_tokens 
+                   WHERE phone = ? 
+                   ORDER BY created_at DESC 
+                   LIMIT 1
+               )`
+        ).bind(user.phone, user.phone).run();
+
+        // שמירת סשן החיבור החדש
+        await env.DB.prepare(
+            `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at) 
+             VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(sessionToken, user.phone, 'permanent', createdAtStr, expiresAtStr, createdAtStr).run();
+
+        return Response.json({
+            success: true,
+            message: "התחברת בהצלחה באמצעות גוגל",
+            token: sessionToken
+        });
+
+    } catch (err) {
+        return Response.json({ error: "שגיאת תקשורת פנימית מול שרתי גוגל: " + err.message }, { status: 500 });
     }
 }
