@@ -1,8 +1,13 @@
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 
-// 1. כניסת מנהל
 export async function handleAdminLogin(request, env) {
-    const { username, password } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { username, password } = body;
+
+    // הגנה מקריסת המסד
+    if (!username || !password) {
+        return Response.json({ error: "חובה להזין שם משתמש וסיסמה" }, { status: 400 });
+    }
 
     const admin = await env.DB.prepare("SELECT * FROM admins WHERE username = ? AND password = ?")
         .bind(username, password).first();
@@ -22,11 +27,14 @@ export async function handleAdminLogin(request, env) {
     });
 }
 
-// 2. שליפת משתמשים (למנהל בלבד) - כולל שתי ההרשאות
 export async function handleAdminGetUsers(request, env) {
-    const { adminToken } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { adminToken } = body;
     
-    if (!adminToken) return Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
+    if (!adminToken || !adminToken.includes(':')) {
+        return Response.json({ error: "חסר אימות מנהל תקין" }, { status: 401 });
+    }
+
     const [username, password] = adminToken.split(':');
     const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
     if (!admin) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
@@ -54,11 +62,14 @@ export async function handleAdminGetUsers(request, env) {
     }
 }
 
-// 3. עדכון משתמש (למנהל בלבד) - שמירת שתי ההרשאות
 export async function handleAdminUpdateUser(request, env) {
-    const { adminToken, phone, newEmail, newPassword, canUpload, canRecord } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { adminToken, phone, newEmail, newPassword, canUpload, canRecord } = body;
 
-    if (!adminToken) return Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
+    if (!adminToken || !adminToken.includes(':')) {
+        return Response.json({ error: "חסר אימות מנהל תקין" }, { status: 401 });
+    }
+
     const [username, adminPass] = adminToken.split(':');
     const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
     if (!admin) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
@@ -74,10 +85,10 @@ export async function handleAdminUpdateUser(request, env) {
         }
 
         const finalPassword = newPassword || user.password;
-        const finalEmail = newEmail !== undefined ? (newEmail || null) : user.email;
+        const finalEmail = newEmail === undefined ? user.email : (newEmail || null); // הגנה מערכים חסרים
         
-        const finalCanUpload = canUpload !== undefined ? (canUpload ? 1 : 0) : user.can_upload;
-        const finalCanRecord = canRecord !== undefined ? (canRecord ? 1 : 0) : user.can_record;
+        const finalCanUpload = canUpload === undefined ? user.can_upload : (canUpload ? 1 : 0);
+        const finalCanRecord = canRecord === undefined ? user.can_record : (canRecord ? 1 : 0);
 
         await env.DB.prepare("UPDATE users SET email = ?, password = ?, can_upload = ?, can_record = ? WHERE phone = ?")
             .bind(finalEmail, finalPassword, finalCanUpload, finalCanRecord, phone).run();
