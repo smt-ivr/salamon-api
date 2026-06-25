@@ -4,7 +4,7 @@ import {
     handleCheckIdentifier, 
     handleRegister, 
     handleLogin, 
-    handleGoogleLogin,   // ייבוא פונקציית גוגל החדשה
+    handleGoogleLogin,   
     handleGetProfile,    
     handleUpdateProfile,
     handleResetPasswordConfirm,
@@ -23,7 +23,14 @@ import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
-import { handleGetSystemMessage, handleAdminUpdateSystemMessage } from './systemMessage.js';
+
+// ייבוא פונקציות מערכת המודעות המשודרגת
+import { 
+    handleGetSystemMessagesForUser, 
+    handleAdminListSystemMessages, 
+    handleAdminSaveSystemMessage, 
+    handleAdminDeleteSystemMessage 
+} from './systemMessage.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -45,15 +52,30 @@ export default {
             let response;
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
-            // מודעות מערכת (System Message)
+            // ============================================
+            // מערכת מודעות ופרסומות משודרגת (System Messages & Ads)
+            // ============================================
+            
+            // שליפת מודעות מתאימות למשתמש קצה + רישום לוג צפייה אוטומטי
             if (request.method === "POST" && pathname.endsWith("/api/system-message")) {
-                response = await handleGetSystemMessage(request, env);
+                response = await handleGetSystemMessagesForUser(request, env, userIp);
             }
-            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-message/update")) {
-                response = await handleAdminUpdateSystemMessage(request, env);
+            // מנהל: קבלת רשימת כל המודעות והחשיפות שלהן במערכת
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/list")) {
+                response = await handleAdminListSystemMessages(request, env);
+            }
+            // מנהל: יצירה או עריכת מודעה קיימת (כולל הגדרת תוקף, עדיפות, חסימה וזמני צינון)
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/save")) {
+                response = await handleAdminSaveSystemMessage(request, env);
+            }
+            // מנהל: מחיקת מודעה מהמערכת
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/delete")) {
+                response = await handleAdminDeleteSystemMessage(request, env);
             }
             
-            // מערכת הודעות קוליות
+            // ============================================
+            // מערכת הודעות קוליות (Voice Messages System)
+            // ============================================
             else if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
                 response = await handleGetMessages(request, env);
             }
@@ -84,7 +106,9 @@ export default {
                 response = await handleDeleteMessage(request, env, userIp); 
             }
 
-            // מערכת האימות - צינתוקים ומיילים
+            // ============================================
+            // מערכת אימות ורישום - צינתוקים ומיילים
+            // ============================================
             else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
                 const body = await request.json().catch(() => ({}));
                 if (body.intent === 'reset') {
@@ -93,7 +117,7 @@ export default {
                         response = Response.json({ error: "חסר מזהה משתמש (טלפון או אימייל)" }, { status: 400 });
                     } else {
                         const result = await verifySystem.requestPasswordReset(identifier, userIp, env);
-                        response = Response.json(result, { status: result.success ? 200 : 400 });
+                        response = Response.json({ success: result.success, message: result.message, sessionId: result.sessionId, phone: result.phone }, { status: result.success ? 200 : 400 });
                     }
                 } else {
                     if (!body.phone) {
@@ -114,7 +138,9 @@ export default {
                 }
             }
 
-            // מנהל - Admin
+            // ============================================
+            // ניהול מנהל מערכת - חסימות ולוגים כלליים
+            // ============================================
             else if (pathname.includes("/api/verify/admin/")) {
                 if (request.method !== "POST") {
                     response = Response.json({ error: "מתודה לא מורשית" }, { status: 405 });
@@ -155,7 +181,9 @@ export default {
                 }
             }
 
-            // נתיבי משתמשים (User Management)
+            // ============================================
+            // נתיבי ניהול משתמשים (User Management)
+            // ============================================
             else if (request.method === "POST" && pathname.endsWith("/api/check-identifier")) {
                 response = await handleCheckIdentifier(request, env);
             } 
@@ -165,7 +193,7 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/login")) {
                 response = await handleLogin(request, env);
             } 
-            else if (request.method === "POST" && pathname.endsWith("/api/login/google")) { // ניתוב התחברות גוגל החדש
+            else if (request.method === "POST" && pathname.endsWith("/api/login/google")) { 
                 response = await handleGoogleLogin(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/user")) { 
@@ -181,7 +209,9 @@ export default {
                 response = await handleResetPasswordConfirm(request, env);
             }
             
-            // ממשק מנהל לניהול משתמשים
+            // ============================================
+            // ממשק מנהל לניהול משתמשים (Admin User Management)
+            // ============================================
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) {
                 response = await handleAdminLogin(request, env);
             }
