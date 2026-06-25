@@ -1,19 +1,20 @@
 // auth.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 
-// פונקציית עזר גלובלית לאימות משתמש - תומכת בפורמט הישן ובפורמט הטוקנים החדש
+// פונקציית עזר גלובלית לאימות משתמש
 export async function authenticateUser(db, userToken) {
     if (!userToken) return null;
 
-    // תמיכה לאחור: אם הפורמט שנתקבל הוא טלפון:סיסמה או אימייל:סיסמה
     if (userToken.includes(':')) {
         const [identifier, password] = userToken.split(':');
+        // מניעת קריסת D1_TYPE_ERROR
+        if (!identifier || !password) return null; 
+        
         return await db.prepare(
             "SELECT * FROM users WHERE (phone = ? OR email = ?) AND password = ?"
         ).bind(identifier, identifier, password).first();
     }
 
-    // פורמט חדש: בדיקת טוקן זמני או קבוע במסד הנתונים
     const session = await db.prepare("SELECT * FROM user_tokens WHERE id = ?").bind(userToken).first();
     if (!session) return null;
 
@@ -21,12 +22,10 @@ export async function authenticateUser(db, userToken) {
     if (session.token_type === 'temporary') {
         const safeExpiry = session.expires_at.replace(' ', 'T') + 'Z';
         if (now > new Date(safeExpiry)) {
-            // הטוקן פג תוקף - נמחק אותו ונחזיר שגיאת אימות
             await db.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
             return null;
         }
 
-        // הארכת תוקף בחצי שעה (30 דקות) בכל שימוש מוצלח
         const newExpiry = new Date(now.getTime() + 30 * 60 * 1000);
         const newExpiryStr = newExpiry.toISOString().replace('T', ' ').substring(0, 19);
         const nowStr = now.toISOString().replace('T', ' ').substring(0, 19);
@@ -35,20 +34,24 @@ export async function authenticateUser(db, userToken) {
             "UPDATE user_tokens SET expires_at = ?, last_used_at = ? WHERE id = ?"
         ).bind(newExpiryStr, nowStr, userToken).run();
     } else {
-        // טוקן קבוע - רק מעדכנים מתי נעשה בו שימוש לאחרונה
         const nowStr = now.toISOString().replace('T', ' ').substring(0, 19);
         await db.prepare(
             "UPDATE user_tokens SET last_used_at = ? WHERE id = ?"
         ).bind(nowStr, userToken).run();
     }
 
-    // החזרת פרטי המשתמש המלאים עבור ה-API
     return await db.prepare("SELECT * FROM users WHERE phone = ?").bind(session.phone).first();
 }
 
-// 1. צומת הכוונה חכם - מקבל טלפון או אימייל
+// 1. צומת הכוונה חכם
 export async function handleCheckIdentifier(request, env) {
-    const { identifier } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { identifier } = body;
+
+    // מניעת קריסת D1_TYPE_ERROR
+    if (!identifier) {
+        return Response.json({ error: "אנא הזינו מספר טלפון או כתובת אימייל" }, { status: 400 });
+    }
 
     const existingUser = await env.DB.prepare("SELECT phone FROM users WHERE phone = ? OR email = ?").bind(identifier, identifier).first();
     
@@ -92,7 +95,8 @@ export async function handleCheckIdentifier(request, env) {
 
 // 2. הרשמה מאובטחת
 export async function handleRegister(request, env) {
-    const { phone, email, password, passwordConfirm, sessionId } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { phone, email, password, passwordConfirm, sessionId } = body;
 
     if (!phone || !password || !passwordConfirm) {
         return Response.json({ error: "חסרים פרטי חובה (טלפון וסיסמה)" }, { status: 400 });
@@ -127,13 +131,14 @@ export async function handleRegister(request, env) {
     }
 
     try {
+        const safeEmail = email || null; // מניעת undefined
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password, can_record, can_upload) VALUES (?, ?, ?, 1, 0)`
-        ).bind(phone, email || null, password).run();
+        ).bind(phone, safeEmail, password).run();
 
         await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
 
-        const token = `${email || phone}:${password}`;
+        const token = `${safeEmail || phone}:${password}`;
         
         return Response.json({ 
             success: true, 
@@ -145,9 +150,15 @@ export async function handleRegister(request, env) {
     }
 }
 
-// 3. התחברות מעודכנת עם תמיכה בטוקנים זמניים וקבועים (זכור אותי) ומגבלת 2 מכשירים
+// 3. התחברות (מחזיר טוקן בלבד)
 export async function handleLogin(request, env) {
-    const { identifier, password, rememberMe } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { identifier, password, rememberMe } = body;
+
+    // מניעת קריסת D1_TYPE_ERROR
+    if (!identifier || !password) {
+        return Response.json({ error: "חובה להזין מזהה (טלפון/אימייל) וסיסמה" }, { status: 400 });
+    }
 
     const user = await env.DB.prepare(
         `SELECT * FROM users WHERE (phone = ? OR email = ?) AND password = ?`
@@ -157,10 +168,6 @@ export async function handleLogin(request, env) {
         return Response.json({ error: "שם משתמש או סיסמה שגויים" }, { status: 401 });
     }
 
-    const name = await getNameFromIni(user.phone, env.YEMOT_TOKEN);
-    const phoneStatus = await checkPhoneStatus(user.phone, env.YEMOT_TOKEN);
-
-    // יצירת טוקן רנדומלי מאובטח
     const sessionToken = crypto.randomUUID();
     const tokenType = rememberMe ? 'permanent' : 'temporary';
     const now = new Date();
@@ -168,12 +175,10 @@ export async function handleLogin(request, env) {
     
     let expiresAtStr = null;
     if (tokenType === 'temporary') {
-        const expiresAt = new Date(now.getTime() + 30 * 60 * 1000); // 30 דקות תוקף התחלתי לטוקן זמני
+        const expiresAt = new Date(now.getTime() + 30 * 60 * 1000); 
         expiresAtStr = expiresAt.toISOString().replace('T', ' ').substring(0, 19);
     }
 
-    // הגבלת טוקנים: מנקים את כל הטוקנים הישנים ומשאירים רק את ה-1 הכי חדש שהיה קיים למשתמש.
-    // יחד עם הטוקן החדש שנוצר ברגע זה, למשתמש יהיו בדיוק 2 טוקנים פעילים לכל היותר במקביל.
     await env.DB.prepare(
         `DELETE FROM user_tokens 
          WHERE phone = ? 
@@ -185,7 +190,6 @@ export async function handleLogin(request, env) {
            )`
     ).bind(user.phone, user.phone).run();
 
-    // שמירת הטוקן החדש במסד הנתונים
     await env.DB.prepare(
         `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at) 
          VALUES (?, ?, ?, ?, ?, ?)`
@@ -193,11 +197,36 @@ export async function handleLogin(request, env) {
 
     return Response.json({
         success: true,
-        token: sessionToken,
+        message: "התחברת בהצלחה",
+        token: sessionToken
+    });
+}
+
+// 4. שליפת פרופיל משתמש (נתיב חדש!)
+export async function handleGetProfile(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const { userToken } = body;
+
+    if (!userToken) {
+        return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
+    }
+
+    const user = await authenticateUser(env.DB, userToken);
+    
+    if (!user) {
+        return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
+    }
+
+    // פנייה לימות המשיח לקבלת מידע עדכני
+    const name = await getNameFromIni(user.phone, env.YEMOT_TOKEN);
+    const phoneStatus = await checkPhoneStatus(user.phone, env.YEMOT_TOKEN);
+
+    return Response.json({
+        success: true,
         user: {
             phone: user.phone,
-            name: name,
-            email: user.email,
+            name: name || "לא מזוהה",
+            email: user.email || "",
             connectedToTzintukim: phoneStatus.active,
             canUpload: !!user.can_upload,
             canRecord: user.can_record !== 0
@@ -205,11 +234,12 @@ export async function handleLogin(request, env) {
     });
 }
 
-// 5. פונקציית התנתקות (מחיקת הטוקן מהמסד)
+// 5. התנתקות
 export async function handleLogout(request, env) {
     try {
-        const body = await request.json();
+        const body = await request.json().catch(() => ({}));
         const userToken = body.userToken;
+        
         if (userToken && !userToken.includes(':')) {
             await env.DB.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
         }
@@ -219,9 +249,10 @@ export async function handleLogout(request, env) {
     }
 }
 
-// 4. עדכון פרופיל
+// 6. עדכון פרופיל
 export async function handleUpdateProfile(request, env) {
-    const { phone, oldPassword, newPassword, newEmail } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { phone, oldPassword, newPassword, newEmail } = body;
 
     if (!phone || !oldPassword) {
         return Response.json({ error: "חובה להזין מספר טלפון וסיסמה נוכחית לאימות" }, { status: 400 });
@@ -240,7 +271,8 @@ export async function handleUpdateProfile(request, env) {
 
     try {
         const finalPassword = newPassword || oldPassword;
-        const finalEmail = newEmail !== undefined ? (newEmail || null) : user.email;
+        // הבטחה ש-newEmail לא מועבר כ-undefined ל-D1
+        const finalEmail = newEmail === undefined ? user.email : (newEmail || null);
 
         await env.DB.prepare("UPDATE users SET email = ?, password = ? WHERE phone = ?")
             .bind(finalEmail, finalPassword, phone).run();
@@ -251,9 +283,10 @@ export async function handleUpdateProfile(request, env) {
     }
 }
 
-// --- חדש: שמירה ועדכון סיסמה בפועל לאחר שקוד האימות אומת בהצלחה ---
+// 7. איפוס סיסמה
 export async function handleResetPasswordConfirm(request, env) {
-    const { phone, password, passwordConfirm, token } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { phone, password, passwordConfirm, token } = body;
 
     if (!phone || !password || !passwordConfirm || !token) {
         return Response.json({ error: "חסרים פרטי חובה להשלמת איפוס הסיסמה." }, { status: 400 });
