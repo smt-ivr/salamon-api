@@ -1,5 +1,6 @@
 // systemMessage.js
 import { authenticateUser } from './auth.js';
+import { getIsraelTimeForDB } from './timeUtils.js';
 
 /**
  * 1. שליפת מודעת המערכת עבור משתמש קצה (POST)
@@ -61,11 +62,13 @@ export async function handleAdminUpdateSystemMessage(request, env) {
             return Response.json({ error: "חסר תוכן המודעה לעדכון" }, { status: 400 });
         }
 
+        const nowIsraelStr = getIsraelTimeForDB();
+
         await env.DB.prepare(`
-            INSERT INTO system_messages (id, html_content) 
-            VALUES (1, ?) 
-            ON CONFLICT(id) DO UPDATE SET html_content = excluded.html_content, updated_at = CURRENT_TIMESTAMP
-        `).bind(htmlContent).run();
+            INSERT INTO system_messages (id, html_content, updated_at) 
+            VALUES (1, ?, ?) 
+            ON CONFLICT(id) DO UPDATE SET html_content = excluded.html_content, updated_at = excluded.updated_at
+        `).bind(htmlContent, nowIsraelStr).run();
 
         return Response.json({
             success: true,
