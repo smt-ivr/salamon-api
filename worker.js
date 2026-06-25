@@ -24,12 +24,13 @@ import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
 
-// ייבוא פונקציות מערכת המודעות המשודרגת
+// ייבוא פונקציות מערכת המודעות המשודרגת (כולל לוגים)
 import { 
     handleGetSystemMessagesForUser, 
     handleAdminListSystemMessages, 
     handleAdminSaveSystemMessage, 
-    handleAdminDeleteSystemMessage 
+    handleAdminDeleteSystemMessage,
+    handleAdminGetAdLogs
 } from './systemMessage.js';
 
 export default {
@@ -56,21 +57,21 @@ export default {
             // מערכת מודעות ופרסומות משודרגת (System Messages & Ads)
             // ============================================
             
-            // שליפת מודעות מתאימות למשתמש קצה + רישום לוג צפייה אוטומטי
             if (request.method === "POST" && pathname.endsWith("/api/system-message")) {
                 response = await handleGetSystemMessagesForUser(request, env, userIp);
             }
-            // מנהל: קבלת רשימת כל המודעות והחשיפות שלהן במערכת
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/list")) {
                 response = await handleAdminListSystemMessages(request, env);
             }
-            // מנהל: יצירה או עריכת מודעה קיימת (כולל הגדרת תוקף, עדיפות, חסימה וזמני צינון)
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/save")) {
                 response = await handleAdminSaveSystemMessage(request, env);
             }
-            // מנהל: מחיקת מודעה מהמערכת
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/delete")) {
                 response = await handleAdminDeleteSystemMessage(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/logs")) {
+                // נתיב חדש: שליפת הלוגים למודעה ספציפית דרך ההנהלה
+                response = await handleAdminGetAdLogs(request, env);
             }
             
             // ============================================
