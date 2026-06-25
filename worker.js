@@ -5,7 +5,7 @@ import {
     handleRegister, 
     handleLogin, 
     handleUpdateProfile,
-    handleResetPasswordConfirm // ייבוא הפונקציה החדשה
+    handleResetPasswordConfirm
 } from './auth.js';
 
 import {
@@ -20,6 +20,9 @@ import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
 
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
+
+// ייבוא מודול הודעות המערכת (המודעה באתר)
+import { handleGetSystemMessage, handleAdminUpdateSystemMessage } from './systemMessage.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -44,9 +47,19 @@ export default {
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
             
             // ==========================================
+            // נתיבי מודעות מערכת (System Message)
+            // ==========================================
+            if (request.method === "POST" && pathname.endsWith("/api/system-message")) {
+                response = await handleGetSystemMessage(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-message/update")) {
+                response = await handleAdminUpdateSystemMessage(request, env);
+            }
+            
+            // ==========================================
             // נתיבי מערכת שמע הודעות, צינתוקים ומחיקה
             // ==========================================
-            if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
+            else if (request.method === "POST" && pathname.endsWith("/api/messages/list")) {
                 response = await handleGetMessages(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/upload")) {
