@@ -1,9 +1,10 @@
 // timeUtils.js
 
 /**
- * מחזיר את הזמן הנוכחי בישראל בפורמט: YYYY-MM-DD HH:MM:SS
+ * מחזיר את הזמן המבוקש בישראל בפורמט: YYYY-MM-DD HH:MM:SS
+ * אם לא מועבר אובייקט תאריך, מחזיר את הזמן הנוכחי בישראל.
  */
-export function getIsraelTimeForDB() {
+export function getIsraelTimeForDB(dateObj = new Date()) {
     const options = { 
         timeZone: 'Asia/Jerusalem', 
         year: 'numeric', month: '2-digit', day: '2-digit', 
@@ -12,14 +13,35 @@ export function getIsraelTimeForDB() {
     };
     
     const formatter = new Intl.DateTimeFormat('en-US', options);
-    const parts = formatter.formatToParts(new Date());
+    const parts = formatter.formatToParts(dateObj);
     const d = {};
     parts.forEach(({ type, value }) => { d[type] = value; });
     
-    // מניעת באג בדפדפנים מסוימים שהופכים חצות ל-24 במקום 00
+    // מניעת באג בדפדפנים/סביבות מסוימות שהופכים חצות ל-24 במקום 00
     let hour = d.hour === '24' ? '00' : d.hour;
     
     return `${d.year}-${d.month}-${d.day} ${hour}:${d.minute}:${d.second}`;
+}
+
+/**
+ * קבלת זמן עתידי או זמן עבר בישראל (לפי דקות) - מעולה לחסימות, טוקנים ותפוגות.
+ * מספר חיובי = עתיד, מספר שלילי = עבר.
+ */
+export function getFutureIsraelTimeForDB(minutesToAdd) {
+    const now = new Date();
+    const future = new Date(now.getTime() + minutesToAdd * 60000);
+    return getIsraelTimeForDB(future);
+}
+
+/**
+ * בודק האם תאריך (מחרוזת שנשלפה ממסד הנתונים בשעון ישראל) כבר עבר
+ */
+export function isPastIsraelTime(dbTimeStr) {
+    if (!dbTimeStr) return false;
+    const pastMs = new Date(dbTimeStr.replace(' ', 'T') + 'Z').getTime();
+    const nowIsraelStr = getIsraelTimeForDB();
+    const nowMs = new Date(nowIsraelStr.replace(' ', 'T') + 'Z').getTime();
+    return nowMs > pastMs;
 }
 
 /**
@@ -28,9 +50,8 @@ export function getIsraelTimeForDB() {
 export function getMinutesSinceIsraelDbTime(dbTimeStr) {
     if (!dbTimeStr) return Infinity;
     
-    // מוסיפים 'Z' פיקטיבי לשני הזמנים כדי שהם יחושבו כאילו שניהם מאותו אזור זמן בדיוק, וכך מנטרלים את הפרשי ה-UTC.
+    // מוסיפים 'Z' פיקטיבי כדי לנטרל חישובי אזורי זמן מקומיים של השרת
     const pastMs = new Date(dbTimeStr.replace(' ', 'T') + 'Z').getTime();
-    
     const nowIsraelStr = getIsraelTimeForDB();
     const nowMs = new Date(nowIsraelStr.replace(' ', 'T') + 'Z').getTime();
     
@@ -59,13 +80,11 @@ export function isWithinBlockedHours(startHour, endHour) {
     const options = { timeZone: 'Asia/Jerusalem', hour: 'numeric', hour12: false };
     const currentHourStr = new Intl.DateTimeFormat('en-US', options).format(new Date());
     let hour = parseInt(currentHourStr, 10);
-    if (hour === 24) hour = 0; // טיפול בחצות
+    if (hour === 24) hour = 0; 
     
     if (startHour < endHour) {
-        // לדוגמה: 0 עד 7 (כולל חצות ועד 6:59:59)
         return hour >= startHour && hour < endHour;
     } else {
-        // תמיכה בשעות הפוכות, נגיד מ-23 עד 7 בבוקר למחרת
         return hour >= startHour || hour < endHour;
     }
 }
