@@ -1,5 +1,6 @@
 // verification.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
+import { getIsraelTimeForDB, getFutureIsraelTimeForDB, getMinutesSinceIsraelDbTime, isPastIsraelTime } from './timeUtils.js';
 
 export class VerificationSystem {
     constructor(db, yemotToken) {
@@ -7,11 +8,12 @@ export class VerificationSystem {
         this.yemotToken = yemotToken; 
     }
 
-    // כתיבת לוג למערכת המעקב
+    // כתיבת לוג למערכת המעקב בשעון ישראל בלבד
     async logAction(level, phone, ip, action, details) {
+        const nowIsraelStr = getIsraelTimeForDB();
         await this.db.prepare(
-            `INSERT INTO verification_logs (level, phone, ip_address, action, details) VALUES (?, ?, ?, ?, ?)`
-        ).bind(level, phone || null, ip || null, action, details).run();
+            `INSERT INTO verification_logs (level, phone, ip_address, action, details, timestamp) VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(level, phone || null, ip || null, action, details, nowIsraelStr).run();
     }
 
     // פונקציית עזר להמרת זמן
@@ -49,7 +51,7 @@ export class VerificationSystem {
             return { success: false, message: "שגיאת שרת: חסר טוקן התחברות לימות המשיח." };
         }
 
-        const now = new Date();
+        const nowIsraelStr = getIsraelTimeForDB();
 
         // --- שלב 1: בדיקת ימות המשיח ---
         const phoneStatus = await checkPhoneStatus(phone, this.yemotToken);
@@ -75,15 +77,15 @@ export class VerificationSystem {
         const blockCheck = await this.db.prepare(
             `SELECT * FROM verification_blocks 
              WHERE (block_type = 'phone' AND block_value = ?) OR (block_type = 'ip' AND block_value = ?)
-             AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)`
-        ).bind(phone, ip).first();
+             AND (blocked_until IS NULL OR blocked_until > ?)`
+        ).bind(phone, ip, nowIsraelStr).first();
 
         if (blockCheck) {
             let msg = `הפעולה נחסמה על ידי ההנהלה. סיבה: ${blockCheck.reason || 'ללא סיבה'}.`;
             if (blockCheck.blocked_until) {
-                const safeDateStr = blockCheck.blocked_until.replace(' ', 'T') + 'Z';
-                const timeLeft = Math.floor((new Date(safeDateStr) - now) / 1000);
-                msg += ` החסימה תשתחרר בעוד ${this.formatTimeRemaining(timeLeft)}.`;
+                // הזמן במסד הוא בעתיד - מחשבים כמה שניות נותרו (הופכים לתוצאה חיובית)
+                const timeLeftSecs = Math.floor(-getMinutesSinceIsraelDbTime(blockCheck.blocked_until) * 60);
+                msg += ` החסימה תשתחרר בעוד ${this.formatTimeRemaining(timeLeftSecs)}.`;
             } else {
                 msg += " החסימה הינה לצמיתות.";
             }
@@ -92,25 +94,24 @@ export class VerificationSystem {
         }
 
         // --- שלב 4: בדיקת היסטוריית ניסיונות (Rate Limiting) ---
+        const yesterdayStr = getFutureIsraelTimeForDB(-24 * 60);
         const recentSession = await this.db.prepare(
             `SELECT * FROM verification_sessions 
-             WHERE phone = ? AND created_at > datetime('now', '-1 day')
+             WHERE phone = ? AND created_at > ?
              ORDER BY created_at DESC LIMIT 1`
-        ).bind(phone).first();
+        ).bind(phone, yesterdayStr).first();
 
         let attemptsCount = 1;
 
         if (recentSession) {
             if (recentSession.status !== 'verified' && recentSession.status !== 'used') {
                 attemptsCount = recentSession.attempts_count + 1;
-                const safeLastAttempt = recentSession.created_at.replace(' ', 'T') + 'Z';
-                const lastAttemptTime = new Date(safeLastAttempt);
                 const cooldownMinutes = this.getCooldownMinutes(recentSession.attempts_count);
-                const nextAllowedTime = new Date(lastAttemptTime.getTime() + cooldownMinutes * 60000);
+                const minutesPassed = getMinutesSinceIsraelDbTime(recentSession.created_at);
 
-                if (now < nextAllowedTime) {
-                    const timeLeft = Math.floor((nextAllowedTime - now) / 1000);
-                    const errorMsg = `נשלחו יותר מדי בקשות. זהו ניסיון מספר ${recentSession.attempts_count}. אנא נסו שוב בעוד ${this.formatTimeRemaining(timeLeft)}.`;
+                if (minutesPassed < cooldownMinutes) {
+                    const timeLeftSecs = Math.floor((cooldownMinutes - minutesPassed) * 60);
+                    const errorMsg = `נשלחו יותר מדי בקשות. זהו ניסיון מספר ${recentSession.attempts_count}. אנא נסו שוב בעוד ${this.formatTimeRemaining(timeLeftSecs)}.`;
                     await this.logAction('WARN', phone, ip, 'RATE_LIMIT', `הגבלת קצב הופעלה. ניסיון ${attemptsCount}`);
                     return { success: false, message: errorMsg };
                 }
@@ -130,12 +131,12 @@ export class VerificationSystem {
 
             const verifyCode = yemotData.verifyCode;
             const sessionId = crypto.randomUUID();
-            const codeExpiresAt = new Date(now.getTime() + 10 * 60000); // 10 דקות תוקף
+            const codeExpiresAtStr = getFutureIsraelTimeForDB(10); // 10 דקות תוקף בשעון ישראל
 
             await this.db.prepare(
-                `INSERT INTO verification_sessions (id, phone, ip_address, verify_code, intent, attempts_count, code_expires_at) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`
-            ).bind(sessionId, phone, ip, verifyCode, intent, attemptsCount, codeExpiresAt.toISOString().replace('T', ' ').substring(0, 19)).run();
+                `INSERT INTO verification_sessions (id, phone, ip_address, verify_code, intent, attempts_count, code_expires_at, created_at) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(sessionId, phone, ip, verifyCode, intent, attemptsCount, codeExpiresAtStr, nowIsraelStr).run();
 
             await this.logAction('INFO', phone, ip, 'SEND_REQUEST', `צינתוק נשלח בהצלחה. ניסיון ${attemptsCount}`);
 
@@ -157,7 +158,7 @@ export class VerificationSystem {
             return { success: false, message: "שגיאת שרת: חסר מפתח אימות למערכת האימיילים (RESEND_API_KEY)." };
         }
 
-        const now = new Date();
+        const nowIsraelStr = getIsraelTimeForDB();
 
         // חיפוש המשתמש לפי אימייל או מספר טלפון
         const user = await this.db.prepare(
@@ -175,15 +176,14 @@ export class VerificationSystem {
         const blockCheck = await this.db.prepare(
             `SELECT * FROM verification_blocks 
              WHERE (block_type = 'phone' AND block_value = ?) OR (block_type = 'ip' AND block_value = ?)
-             AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)`
-        ).bind(user.phone, ip).first();
+             AND (blocked_until IS NULL OR blocked_until > ?)`
+        ).bind(user.phone, ip, nowIsraelStr).first();
 
         if (blockCheck) {
             let msg = `הפעולה נחסמה על ידי ההנהלה. סיבה: ${blockCheck.reason || 'ללא סיבה'}.`;
             if (blockCheck.blocked_until) {
-                const safeDateStr = blockCheck.blocked_until.replace(' ', 'T') + 'Z';
-                const timeLeft = Math.floor((new Date(safeDateStr) - now) / 1000);
-                msg += ` החסימה תשתחרר בעוד ${this.formatTimeRemaining(timeLeft)}.`;
+                const timeLeftSecs = Math.floor(-getMinutesSinceIsraelDbTime(blockCheck.blocked_until) * 60);
+                msg += ` החסימה תשתחרר בעוד ${this.formatTimeRemaining(timeLeftSecs)}.`;
             } else {
                 msg += " החסימה הינה לצמיתות.";
             }
@@ -192,24 +192,23 @@ export class VerificationSystem {
         }
 
         // הגבלת קצב (Rate Limiting)
+        const yesterdayStr = getFutureIsraelTimeForDB(-24 * 60);
         const recentSession = await this.db.prepare(
             `SELECT * FROM verification_sessions 
-             WHERE phone = ? AND intent = 'reset' AND created_at > datetime('now', '-1 day')
+             WHERE phone = ? AND intent = 'reset' AND created_at > ?
              ORDER BY created_at DESC LIMIT 1`
-        ).bind(user.phone).first();
+        ).bind(user.phone, yesterdayStr).first();
 
         let attemptsCount = 1;
         if (recentSession) {
             if (recentSession.status !== 'verified' && recentSession.status !== 'used') {
                 attemptsCount = recentSession.attempts_count + 1;
-                const safeLastAttempt = recentSession.created_at.replace(' ', 'T') + 'Z';
-                const lastAttemptTime = new Date(safeLastAttempt);
                 const cooldownMinutes = this.getCooldownMinutes(recentSession.attempts_count);
-                const nextAllowedTime = new Date(lastAttemptTime.getTime() + cooldownMinutes * 60000);
+                const minutesPassed = getMinutesSinceIsraelDbTime(recentSession.created_at);
 
-                if (now < nextAllowedTime) {
-                    const timeLeft = Math.floor((nextAllowedTime - now) / 1000);
-                    return { success: false, message: `נשלחו יותר מדי בקשות איפוס. אנא נסו שוב בעוד ${this.formatTimeRemaining(timeLeft)}.` };
+                if (minutesPassed < cooldownMinutes) {
+                    const timeLeftSecs = Math.floor((cooldownMinutes - minutesPassed) * 60);
+                    return { success: false, message: `נשלחו יותר מדי בקשות איפוס. אנא נסו שוב בעוד ${this.formatTimeRemaining(timeLeftSecs)}.` };
                 }
             }
         }
@@ -221,14 +220,14 @@ export class VerificationSystem {
         // יצירת קוד אימות רנדומלי בן 6 ספרות וסשן חדש
         const verifyCode = Math.floor(100000 + Math.random() * 900000).toString();
         const sessionId = crypto.randomUUID();
-        const codeExpiresAt = new Date(now.getTime() + 10 * 60000); // 10 דקות תוקף
+        const codeExpiresAtStr = getFutureIsraelTimeForDB(10); // 10 דקות תוקף
 
         try {
-            // שמירת הסשן במסד הנתונים עם intent של reset
+            // שמירת הסשן במסד הנתונים
             await this.db.prepare(
-                `INSERT INTO verification_sessions (id, phone, ip_address, verify_code, intent, attempts_count, code_expires_at) 
-                 VALUES (?, ?, ?, ?, 'reset', ?, ?)`
-            ).bind(sessionId, user.phone, ip, verifyCode, attemptsCount, codeExpiresAt.toISOString().replace('T', ' ').substring(0, 19)).run();
+                `INSERT INTO verification_sessions (id, phone, ip_address, verify_code, intent, attempts_count, code_expires_at, created_at) 
+                 VALUES (?, ?, ?, ?, 'reset', ?, ?, ?)`
+            ).bind(sessionId, user.phone, ip, verifyCode, attemptsCount, codeExpiresAtStr, nowIsraelStr).run();
 
             // בניית המייל המעוצב בעברית (RTL)
             const emailHtml = `
@@ -298,11 +297,7 @@ export class VerificationSystem {
             return { success: false, message: "בקשת האימות לא נמצאה, פג תוקפה או שכבר אומתה." };
         }
 
-        const now = new Date();
-        const safeExpiry = session.code_expires_at.replace(' ', 'T') + 'Z';
-        const expiryTime = new Date(safeExpiry);
-
-        if (now > expiryTime) {
+        if (isPastIsraelTime(session.code_expires_at)) {
             await this.db.prepare(`UPDATE verification_sessions SET status = 'expired' WHERE id = ?`).bind(sessionId).run();
             return { success: false, message: "זמן הזנת הקוד פג (עברו יותר מ-10 דקות). אנא בקשו קוד מחדש." };
         }
@@ -322,11 +317,11 @@ export class VerificationSystem {
 
         // --- האימות הצליח ---
         const authToken = crypto.randomUUID();
-        let tokenExpiresAt = null;
+        const nowIsraelStr = getIsraelTimeForDB();
+        let tokenExpiresAtStr = null;
 
         if (session.intent === 'register' || session.intent === 'reset') {
-            const tokenTime = new Date(now.getTime() + 15 * 60000);
-            tokenExpiresAt = tokenTime.toISOString().replace('T', ' ').substring(0, 19);
+            tokenExpiresAtStr = getFutureIsraelTimeForDB(15);
         } else if (session.intent === 'login') {
             await this.db.prepare(
                 `UPDATE verification_sessions SET status = 'expired' WHERE phone = ? AND intent = 'login' AND status = 'verified'`
@@ -334,8 +329,8 @@ export class VerificationSystem {
         }
 
         await this.db.prepare(
-            `UPDATE verification_sessions SET status = 'verified', auth_token = ?, token_expires_at = ?, ip_address = ? WHERE id = ?`
-        ).bind(authToken, tokenExpiresAt, ip, sessionId).run();
+            `UPDATE verification_sessions SET status = 'verified', auth_token = ?, token_expires_at = ?, ip_address = ?, updated_at = ? WHERE id = ?`
+        ).bind(authToken, tokenExpiresAtStr, ip, nowIsraelStr, sessionId).run();
 
         await this.logAction('INFO', phone, ip, 'VERIFY_SUCCESS', `אימות הצליח (סוג: ${session.intent})`);
 
@@ -373,18 +368,17 @@ export class VerificationSystem {
     async blockTarget(type, value, reason, durationValue, durationUnit, ip) {
         let blockedUntil = null;
         if (durationValue && durationUnit) {
-            const now = new Date();
-            let ms = 0;
-            if (durationUnit === 'seconds') ms = durationValue * 1000;
-            else if (durationUnit === 'minutes') ms = durationValue * 60000;
-            else if (durationUnit === 'hours') ms = durationValue * 3600000;
-            else if (durationUnit === 'days') ms = durationValue * 86400000;
-            else if (durationUnit === 'months') ms = durationValue * 30 * 86400000;
+            let durationMinutes = 0;
+            if (durationUnit === 'seconds') durationMinutes = durationValue / 60;
+            else if (durationUnit === 'minutes') durationMinutes = durationValue;
+            else if (durationUnit === 'hours') durationMinutes = durationValue * 60;
+            else if (durationUnit === 'days') durationMinutes = durationValue * 24 * 60;
+            else if (durationUnit === 'months') durationMinutes = durationValue * 30 * 24 * 60;
             
-            const futureDate = new Date(now.getTime() + ms);
-            blockedUntil = futureDate.toISOString().replace('T', ' ').substring(0, 19);
+            blockedUntil = getFutureIsraelTimeForDB(durationMinutes);
         }
 
+        const nowIsraelStr = getIsraelTimeForDB();
         const existing = await this.db.prepare(
             `SELECT id FROM verification_blocks WHERE block_type = ? AND block_value = ?`
         ).bind(type, value).first();
@@ -396,8 +390,8 @@ export class VerificationSystem {
             return { success: true, message: `החסימה עבור ${value} עודכנה בהצלחה במערכת.` };
         } else {
             await this.db.prepare(
-                `INSERT INTO verification_blocks (block_type, block_value, reason, blocked_until) VALUES (?, ?, ?, ?)`
-            ).bind(type, value, reason, blockedUntil).run();
+                `INSERT INTO verification_blocks (block_type, block_value, reason, blocked_until, created_at) VALUES (?, ?, ?, ?, ?)`
+            ).bind(type, value, reason, blockedUntil, nowIsraelStr).run();
             return { success: true, message: `החסימה עבור ${value} נוצרה בהצלחה במערכת.` };
         }
     }
@@ -416,10 +410,11 @@ export class VerificationSystem {
 
     async cleanOldLogs() {
         try {
+            const cutOffDateStr = getFutureIsraelTimeForDB(-30 * 24 * 60); // לפני 30 ימים בשעון ישראל
             await this.db.prepare(
-                `DELETE FROM verification_logs WHERE timestamp < datetime('now', '-30 days')`
-            ).run();
-            return { success: true, message: "נוקו לוגים היסטוריים." };
+                `DELETE FROM verification_logs WHERE timestamp < ?`
+            ).bind(cutOffDateStr).run();
+            return { success: true, message: "נוקו לוגים היסטוריים בהצלחה." };
         } catch (e) {
             return { success: false, message: e.message };
         }
