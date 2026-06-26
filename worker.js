@@ -33,11 +33,8 @@ import {
     handleAdminGetAdLogs
 } from './systemMessage.js';
 
-// ייבוא פונקציות ספירת ההאזנות החדשות
-import {
-    handleLogListen,
-    handleGetListenStats
-} from './listenStats.js';
+// ייבוא פונקצית ספירת ההאזנות החדשה
+import { handleGetListenStats } from './listenStats.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -89,7 +86,8 @@ export default {
                 response = await handleUploadMessage(request, env);
             }
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) {
-                response = await handleStreamMessage(request, env);
+                // העברת ctx על מנת שנוכל להפעיל את רישום ההאזנה ברקע מבלי לעכב את הזרמת הקובץ
+                response = await handleStreamMessage(request, env, ctx);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/tzintuk")) {
                 const body = await request.json().catch(() => ({}));
@@ -111,10 +109,7 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/messages/delete")) {
                 response = await handleDeleteMessage(request, env, userIp); 
             }
-            // --- נתיבים חדשים לסטטיסטיקת האזנות ---
-            else if (request.method === "POST" && pathname.endsWith("/api/messages/log-listen")) {
-                response = await handleLogListen(request, env);
-            }
+            // --- נתיב חדש לסטטיסטיקת האזנות ---
             else if (request.method === "POST" && pathname.endsWith("/api/messages/stats")) {
                 response = await handleGetListenStats(request, env);
             }
