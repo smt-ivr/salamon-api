@@ -1,6 +1,7 @@
 // messages.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { authenticateUser } from './auth.js'; 
+import { getIsraelTimeForDB } from './timeUtils.js';
 
 // 1. קבלת רשימת הקבצים + שליפת שם המקליט מתוך קובץ ה-TXT
 export async function handleGetMessages(request, env) {
@@ -73,8 +74,8 @@ export async function handleGetMessages(request, env) {
     }
 }
 
-// 2. הזרמת הקובץ לנגן
-export async function handleStreamMessage(request, env) {
+// 2. הזרמת הקובץ לנגן והוספת מונה האזנות ברקע
+export async function handleStreamMessage(request, env, ctx) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
     const fileId = url.searchParams.get('fileId'); 
@@ -95,6 +96,19 @@ export async function handleStreamMessage(request, env) {
     if (!user) {
         return new Response("גישה נדחתה: משתמש לא מורשה", { status: 403 });
     }
+
+    // =====================================================================
+    // רישום האזנה ברקע (מקבילי) - לא מעכב את תחילת ניגון השמע
+    // =====================================================================
+    const nowIsraelStr = getIsraelTimeForDB();
+    const logPromise = env.DB.prepare(
+        `INSERT OR IGNORE INTO message_listens (file_id, phone, listened_at) VALUES (?, ?, ?)`
+    ).bind(fileId.toString(), user.phone, nowIsraelStr).run().catch(err => console.error("DB Log Error:", err));
+    
+    if (ctx && ctx.waitUntil) {
+        ctx.waitUntil(logPromise);
+    }
+    // =====================================================================
 
     const token = env.YEMOT_TOKEN;
     const downloadUrl = `https://www.call2all.co.il/ym/api/DownloadFile?token=${token}&path=${encodeURIComponent(filePath)}`;
