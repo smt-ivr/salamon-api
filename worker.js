@@ -33,6 +33,12 @@ import {
     handleAdminGetAdLogs
 } from './systemMessage.js';
 
+// ייבוא פונקציות ספירת ההאזנות החדשות
+import {
+    handleLogListen,
+    handleGetListenStats
+} from './listenStats.js';
+
 export default {
     async fetch(request, env, ctx) {
         const corsHeaders = {
@@ -70,7 +76,6 @@ export default {
                 response = await handleAdminDeleteSystemMessage(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/logs")) {
-                // נתיב חדש: שליפת הלוגים למודעה ספציפית דרך ההנהלה
                 response = await handleAdminGetAdLogs(request, env);
             }
             
@@ -105,6 +110,13 @@ export default {
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/delete")) {
                 response = await handleDeleteMessage(request, env, userIp); 
+            }
+            // --- נתיבים חדשים לסטטיסטיקת האזנות ---
+            else if (request.method === "POST" && pathname.endsWith("/api/messages/log-listen")) {
+                response = await handleLogListen(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/messages/stats")) {
+                response = await handleGetListenStats(request, env);
             }
 
             // ============================================
