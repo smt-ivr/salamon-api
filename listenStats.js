@@ -1,32 +1,4 @@
 // listenStats.js
-import { authenticateUser } from './auth.js';
-import { getIsraelTimeForDB } from './timeUtils.js';
-
-// פונקציה לתיעוד האזנה (מתוכנן להיקרא בלחיצה על Play)
-export async function handleLogListen(request, env) {
-    try {
-        const body = await request.json().catch(() => ({}));
-        const { userToken, fileId } = body;
-
-        if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
-        if (!fileId) return Response.json({ error: "חסר מזהה קובץ" }, { status: 400 });
-
-        const user = await authenticateUser(env.DB, userToken);
-        if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
-
-        const nowIsraelStr = getIsraelTimeForDB();
-
-        // שימוש ב-INSERT OR IGNORE כדי למנוע קריסה אם המשתמש כבר שמע את הקובץ
-        // ההגבלה (UNIQUE) בטבלה תדאג שהרשומה לא תיווצר פעמיים
-        await env.DB.prepare(
-            `INSERT OR IGNORE INTO message_listens (file_id, phone, listened_at) VALUES (?, ?, ?)`
-        ).bind(fileId.toString(), user.phone, nowIsraelStr).run();
-
-        return Response.json({ success: true, message: "ההאזנה תועדה בהצלחה." });
-    } catch (error) {
-        return Response.json({ error: "שגיאת שרת פנימית בעת רישום ההאזנה.", details: error.message }, { status: 500 });
-    }
-}
 
 // פונקציה לשליפת נתוני צפיות/האזנות מקוצרת מקובץ
 export async function handleGetListenStats(request, env) {
@@ -62,7 +34,7 @@ export async function handleGetListenStats(request, env) {
             }
         } catch (yemotError) {
             console.error("שגיאה בשליפת נתוני האזנות מימות המשיח:", yemotError);
-            // לא עוצרים את הבקשה, פשוט נחזיר 0 שמיעות מהטלפון במקרה של שגיאת רשת
+            // במקרה של שגיאה מול ימות המשיח נחזיר 0 שמיעות טלפון ולא נקריס את התשובה
         }
 
         const totalListens = webListens + phoneListens;
