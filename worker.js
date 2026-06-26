@@ -24,7 +24,7 @@ import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
 
-// ייבוא פונקציות מערכת המודעות המשודרגת (כולל לוגים)
+// ייבוא פונקציות מערכת המודעות
 import { 
     handleGetSystemMessagesForUser, 
     handleAdminListSystemMessages, 
@@ -33,8 +33,11 @@ import {
     handleAdminGetAdLogs
 } from './systemMessage.js';
 
-// ייבוא פונקצית ספירת ההאזנות החדשה
+// ייבוא פונקציות ספירת ההאזנות באתר
 import { handleGetListenStats } from './listenStats.js';
+
+// ייבוא ממשק API לימות המשיח (קריאת נתוני האזנה טלפונית)
+import { handlePhoneApiStats } from './phoneApi.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -55,12 +58,19 @@ export default {
         try {
             let response;
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
+
+            // ============================================
+            // API פתוח לימות המשיח (ללא אימות טוקן)
+            // ============================================
+            if (pathname.endsWith("/api/phone/stats")) {
+                // תמיכה ב-GET ו-POST לטובת שלוחת API
+                response = await handlePhoneApiStats(request, env);
+            }
             
             // ============================================
             // מערכת מודעות ופרסומות משודרגת (System Messages & Ads)
             // ============================================
-            
-            if (request.method === "POST" && pathname.endsWith("/api/system-message")) {
+            else if (request.method === "POST" && pathname.endsWith("/api/system-message")) {
                 response = await handleGetSystemMessagesForUser(request, env, userIp);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/list")) {
@@ -86,7 +96,6 @@ export default {
                 response = await handleUploadMessage(request, env);
             }
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) {
-                // העברת ctx על מנת שנוכל להפעיל את רישום ההאזנה ברקע מבלי לעכב את הזרמת הקובץ
                 response = await handleStreamMessage(request, env, ctx);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/tzintuk")) {
@@ -109,7 +118,6 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/messages/delete")) {
                 response = await handleDeleteMessage(request, env, userIp); 
             }
-            // --- נתיב חדש לסטטיסטיקת האזנות ---
             else if (request.method === "POST" && pathname.endsWith("/api/messages/stats")) {
                 response = await handleGetListenStats(request, env);
             }
@@ -233,7 +241,11 @@ export default {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
             }
 
-            const newResponse = new Response(response.body, response);
+            // החזרת התגובה עם כותרי CORS
+            // אם זו תגובה של טקסט פשוט (כמו ה-API לטלפון), נכבד את זה ולא נעטוף ב-JSON
+            const isPlainText = response.headers && response.headers.get('Content-Type') === 'text/plain; charset=utf-8';
+            let newResponse = isPlainText ? response : new Response(response.body, response);
+            
             for (let [key, value] of Object.entries(corsHeaders)) {
                 newResponse.headers.set(key, value);
             }
