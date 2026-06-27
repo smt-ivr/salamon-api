@@ -38,6 +38,7 @@ export async function handleGetMessages(request, env) {
             
             let recorderName = "";
             let recorderPhone = ""; 
+            let fromWeb = false; // דגל זיהוי האם הועלה מהאתר
 
             try {
                 const txtRes = await fetch(txtUrl);
@@ -49,6 +50,16 @@ export async function handleGetMessages(request, env) {
                         }
                         if (txtData.contents.includes('ValName-')) {
                             recorderName = txtData.contents.split('ValName-')[1].trim();
+                            
+                            // חיתוך סימניות רשת והפעלת הדגל
+                            if (recorderName.includes('[WEB]')) {
+                                fromWeb = true;
+                                recorderName = recorderName.replace('[WEB]', '').trim();
+                            } else if (recorderName.includes('(דרך האתר)')) { // תאימות לאחור
+                                fromWeb = true;
+                                recorderName = recorderName.replace('(דרך האתר)', '').trim();
+                            }
+
                         } else if (recorderPhone) {
                             recorderName = recorderPhone;
                         }
@@ -64,7 +75,8 @@ export async function handleGetMessages(request, env) {
                 durationStr: file.durationStr,
                 mtime: file.mtime,
                 valName: recorderName || file.phone || "מערכת / לא מזוהה",
-                isOutgoing: isOutgoing 
+                isOutgoing: isOutgoing,
+                fromWeb: fromWeb // החזרת הדגל ללקוח
             };
         }));
 
