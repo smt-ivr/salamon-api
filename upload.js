@@ -92,8 +92,10 @@ export async function handleUploadMessage(request, env) {
             } catch (e) {}
 
             const userName = await getNameFromIni(user.phone, token);
-            // כאן שונה הסימון להיות [WEB] במקום "דרך האתר"
-            const displayName = userName ? `${userName} [WEB]` : `משתמש אתר [WEB]`;
+            
+            // יצירת תגית מותאמת אישית לפי סוג ההעלאה
+            const webTag = uploadType === 'file' ? '[WEB_FILE]' : '[WEB_REC]';
+            const displayName = userName ? `${userName} ${webTag}` : `משתמש אתר ${webTag}`;
 
             let did = "0733517857"; 
             let recDate = "";
