@@ -66,7 +66,6 @@ export default {
             // API פתוח לימות המשיח (ללא אימות טוקן)
             // ============================================
             if (pathname.endsWith("/api/phone/stats")) {
-                // תמיכה ב-GET ו-POST לטובת שלוחת API
                 response = await handlePhoneApiStats(request, env);
             }
             
@@ -125,7 +124,7 @@ export default {
                 response = await handleGetListenStats(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/stats/members")) {
-                response = await handleGetSystemStats(request, env); // הנתיב החדש
+                response = await handleGetSystemStats(request, env);
             }
 
             // ============================================
@@ -244,14 +243,53 @@ export default {
                 response = await handleAdminUpdateUser(request, env);
             }
             else {
-                response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
+                // הצגת עמוד 404 מעוצב עבור גישה מהדפדפן (GET) לעומת שגיאת JSON עבור API
+                if (request.method === "GET") {
+                    const fallbackHtml = `
+                    <!DOCTYPE html>
+                    <html lang="he" dir="rtl">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>מערכת ה-API - עכשיו סלומון</title>
+                        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+                        <style>
+                            body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+                            .card { background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); text-align: center; max-width: 400px; width: 90%; }
+                            .icon { font-size: 3.5rem; color: #3b82f6; margin-bottom: 20px; }
+                            h1 { color: #0f172a; margin: 0 0 10px 0; font-size: 1.5rem; }
+                            p { color: #54656f; margin: 0 0 25px 0; line-height: 1.5; }
+                            .btn { display: inline-flex; align-items: center; gap: 8px; background: #16a34a; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; transition: 0.2s; }
+                            .btn:hover { background: #15803d; transform: translateY(-2px); }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="card">
+                            <div class="icon"><i class="fa-solid fa-server"></i></div>
+                            <h1>שרת התקשורת</h1>
+                            <p>הגעתם לנתיב ה-API של מערכת "עכשיו סלומון".<br>נתיב זה מיועד לקבלת נתונים מאחורי הקלעים ואינו מיועד לצפייה ישירה.</p>
+                            <a href="https://smti.uk/salamon" class="btn">למעבר לאתר הראשי <i class="fa-solid fa-arrow-left"></i></a>
+                        </div>
+                    </body>
+                    </html>`;
+                    
+                    response = new Response(fallbackHtml, { 
+                        status: 404, 
+                        headers: { 'Content-Type': 'text/html; charset=utf-8' } 
+                    });
+                } else {
+                    response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
+                }
             }
 
-            const isPlainText = response.headers && response.headers.get('Content-Type') === 'text/plain; charset=utf-8';
-            let newResponse = isPlainText ? response : new Response(response.body, response);
+            // הוספת כותרי CORS בצורה בטוחה
+            const contentType = response.headers ? response.headers.get('Content-Type') : '';
+            const isSpecialFormat = contentType === 'text/plain; charset=utf-8' || contentType === 'text/html; charset=utf-8';
+            
+            let newResponse = isSpecialFormat ? response : new Response(response.body, response);
             
             for (let [key, value] of Object.entries(corsHeaders)) {
-                newResponse.headers.set(key, value);
+                try { newResponse.headers.set(key, value); } catch(e) {}
             }
             return newResponse;
 
