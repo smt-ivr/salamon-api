@@ -2,19 +2,9 @@
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
 
-// פונקציית עזר גלובלית לאימות משתמש
+// פונקציית עזר גלובלית לאימות משתמש - מעודכנת לטוקנים בלבד (ללא סיסמאות חשופות)
 export async function authenticateUser(db, userToken) {
     if (!userToken) return null;
-
-    if (userToken.includes(':')) {
-        const [identifier, password] = userToken.split(':');
-        // מניעת קריסת D1_TYPE_ERROR
-        if (!identifier || !password) return null; 
-        
-        return await db.prepare(
-            "SELECT * FROM users WHERE (phone = ? OR email = ?) AND password = ?"
-        ).bind(identifier, identifier, password).first();
-    }
 
     const session = await db.prepare("SELECT * FROM user_tokens WHERE id = ?").bind(userToken).first();
     if (!session) return null;
@@ -46,7 +36,6 @@ export async function handleCheckIdentifier(request, env) {
     const body = await request.json().catch(() => ({}));
     const { identifier } = body;
 
-    // מניעת קריסת D1_TYPE_ERROR
     if (!identifier) {
         return Response.json({ error: "אנא הזינו מספר טלפון או כתובת אימייל" }, { status: 400 });
     }
@@ -129,21 +118,17 @@ export async function handleRegister(request, env) {
     }
 
     try {
-        const safeEmail = email || null; // מניעת undefined
-        // מוסיפים created_at יזום כדי לעקוף את UTC הדיפולטי של המסד
+        const safeEmail = email || null;
         const nowIsraelStr = getIsraelTimeForDB();
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password, can_record, can_upload, created_at) VALUES (?, ?, ?, 1, 0, ?)`
         ).bind(phone, safeEmail, password, nowIsraelStr).run();
 
         await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
-
-        const token = `${safeEmail || phone}:${password}`;
         
         return Response.json({ 
             success: true, 
-            message: "נרשמת בהצלחה",
-            token: token
+            message: "נרשמת בהצלחה"
         });
     } catch (e) {
         return Response.json({ error: "שגיאת רישום. ייתכן והאימייל כבר תפוס." }, { status: 400 });
@@ -155,7 +140,6 @@ export async function handleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { identifier, password, rememberMe } = body;
 
-    // מניעת קריסת D1_TYPE_ERROR
     if (!identifier || !password) {
         return Response.json({ error: "חובה להזין מזהה (טלפון/אימייל) וסיסמה" }, { status: 400 });
     }
@@ -215,7 +199,6 @@ export async function handleGetProfile(request, env) {
         return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
     }
 
-    // פנייה לימות המשיח לקבלת מידע עדכני
     const name = await getNameFromIni(user.phone, env.YEMOT_TOKEN);
     const phoneStatus = await checkPhoneStatus(user.phone, env.YEMOT_TOKEN);
 
@@ -238,7 +221,7 @@ export async function handleLogout(request, env) {
         const body = await request.json().catch(() => ({}));
         const userToken = body.userToken;
         
-        if (userToken && !userToken.includes(':')) {
+        if (userToken) {
             await env.DB.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
         }
         return Response.json({ success: true, message: "התנתקת מהמערכת בהצלחה" });
@@ -269,7 +252,6 @@ export async function handleUpdateProfile(request, env) {
 
     try {
         const finalPassword = newPassword || oldPassword;
-        // הבטחה ש-newEmail לא מועבר כ-undefined ל-D1
         const finalEmail = newEmail === undefined ? user.email : (newEmail || null);
 
         await env.DB.prepare("UPDATE users SET email = ?, password = ? WHERE phone = ?")
@@ -325,7 +307,6 @@ export async function handleGoogleLogin(request, env) {
     }
 
     try {
-        // שלב א': אימות הטוקן מול שרתי ה-OAuth הרשמיים של גוגל
         const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
         const googleData = await googleRes.json();
 
@@ -333,14 +314,12 @@ export async function handleGoogleLogin(request, env) {
             return Response.json({ error: "אימות מול שרתי גוגל נכשל או שהמשתמש חסם גישה לאימייל" }, { status: 401 });
         }
 
-        // אבטחה: וידוא קליינט תואם ל-Client ID של האפליקציה שלך
         if (googleData.aud !== "89500817024-tbvsuu4dci6bqh173l65ua9lc65pe24p.apps.googleusercontent.com") {
             return Response.json({ error: "בקשה חסומה: מזהה אפליקציה (Client ID) לא תואם" }, { status: 403 });
         }
 
         const email = googleData.email;
 
-        // שלב ב': שליפת המשתמש לפי כתובת האימייל בלבד
         const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
 
         if (!user) {
@@ -349,12 +328,10 @@ export async function handleGoogleLogin(request, env) {
             }, { status: 404 });
         }
 
-        // שלב ג': המשתמש נמצא, יצירת טוקן חיבור קבוע (permanent) עבור זכור אותי
         const sessionToken = crypto.randomUUID();
         const createdAtStr = getIsraelTimeForDB();
-        const expiresAtStr = null; // null מייצג חיבור לצמיתות (permanent)
+        const expiresAtStr = null; 
 
-        // ניקוי טוקנים ישנים בשביל לשמור על סדר במסד הנתונים
         await env.DB.prepare(
             `DELETE FROM user_tokens 
              WHERE phone = ? 
@@ -366,7 +343,6 @@ export async function handleGoogleLogin(request, env) {
                )`
         ).bind(user.phone, user.phone).run();
 
-        // שמירת סשן החיבור החדש
         await env.DB.prepare(
             `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at) 
              VALUES (?, ?, ?, ?, ?, ?)`
