@@ -7,6 +7,7 @@ import {
     handleGoogleLogin,   
     handleGetProfile,    
     handleUpdateProfile,
+    handleChangePassword,
     handleResetPasswordConfirm,
     handleLogout,         
     authenticateUser      
@@ -125,7 +126,7 @@ export default {
                 response = await handleGetListenStats(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/stats/members")) {
-                response = await handleGetSystemStats(request, env); // הנתיב החדש
+                response = await handleGetSystemStats(request, env); 
             }
 
             // ============================================
@@ -226,6 +227,9 @@ export default {
             }
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
                 response = await handleUpdateProfile(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/change-password")) {
+                response = await handleChangePassword(request, env);
             }
             else if (request.method === "POST" && pathname.endsWith("/api/reset-password/confirm")) {
                 response = await handleResetPasswordConfirm(request, env);
