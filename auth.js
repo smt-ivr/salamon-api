@@ -230,32 +230,26 @@ export async function handleLogout(request, env) {
     }
 }
 
-// 6. עדכון פרופיל
+// 6. עדכון פרופיל (הוסר שינוי סיסמה, משתמש בטוקן בלבד)
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
-    const { phone, oldPassword, newPassword, newEmail } = body;
+    const { userToken, newEmail } = body;
 
-    if (!phone || !oldPassword) {
-        return Response.json({ error: "חובה להזין מספר טלפון וסיסמה נוכחית לאימות" }, { status: 400 });
+    if (!userToken) {
+        return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
     }
 
-    const user = await env.DB.prepare("SELECT * FROM users WHERE phone = ? AND password = ?")
-        .bind(phone, oldPassword).first();
+    const user = await authenticateUser(env.DB, userToken);
     
     if (!user) {
-        return Response.json({ error: "הסיסמה הנוכחית שהוזנה שגויה" }, { status: 401 });
-    }
-
-    if (newPassword && !/^\d{4,10}$/.test(newPassword)) {
-        return Response.json({ error: "הסיסמה החדשה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
+        return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
     }
 
     try {
-        const finalPassword = newPassword || oldPassword;
         const finalEmail = newEmail === undefined ? user.email : (newEmail || null);
 
-        await env.DB.prepare("UPDATE users SET email = ?, password = ? WHERE phone = ?")
-            .bind(finalEmail, finalPassword, phone).run();
+        await env.DB.prepare("UPDATE users SET email = ? WHERE phone = ?")
+            .bind(finalEmail, user.phone).run();
 
         return Response.json({ success: true, message: "הפרטים עודכנו בהצלחה" });
     } catch (e) {
@@ -263,7 +257,54 @@ export async function handleUpdateProfile(request, env) {
     }
 }
 
-// 7. איפוס סיסמה
+// 7. שינוי סיסמה (נתיב חדש לחלוטין)
+export async function handleChangePassword(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const { userToken, oldPassword, newPassword, newPasswordConfirm, logoutAllDevices } = body;
+
+    if (!userToken) {
+        return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
+    }
+
+    const user = await authenticateUser(env.DB, userToken);
+    if (!user) {
+        return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
+    }
+
+    if (!oldPassword || !newPassword || !newPasswordConfirm) {
+        return Response.json({ error: "חובה להזין סיסמה נוכחית ואת הסיסמה החדשה פעמיים" }, { status: 400 });
+    }
+
+    if (user.password !== oldPassword) {
+        return Response.json({ error: "הסיסמה הנוכחית שהוזנה שגויה" }, { status: 401 });
+    }
+
+    if (newPassword !== newPasswordConfirm) {
+        return Response.json({ error: "הסיסמאות החדשות אינן תואמות" }, { status: 400 });
+    }
+
+    if (!/^\d{4,10}$/.test(newPassword)) {
+        return Response.json({ error: "הסיסמה החדשה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
+    }
+
+    try {
+        // עדכון הסיסמה
+        await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?")
+            .bind(newPassword, user.phone).run();
+
+        // ניתוק משתמשים במידת הצורך (מחיקת טוקנים)
+        if (logoutAllDevices) {
+            await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(user.phone).run();
+            return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה וכל המכשירים נותקו. אנא התחברו מחדש למערכת." });
+        } else {
+            return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה" });
+        }
+    } catch (e) {
+        return Response.json({ error: "שגיאה בעדכון הסיסמה: " + e.message }, { status: 500 });
+    }
+}
+
+// 8. איפוס סיסמה (שכחתי סיסמה)
 export async function handleResetPasswordConfirm(request, env) {
     const body = await request.json().catch(() => ({}));
     const { phone, password, passwordConfirm, token } = body;
@@ -297,7 +338,7 @@ export async function handleResetPasswordConfirm(request, env) {
     }
 }
 
-// 8. התחברות באמצעות גוגל (טוקן קבוע - זכור אותי)
+// 9. התחברות באמצעות גוגל (טוקן קבוע - זכור אותי)
 export async function handleGoogleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { token } = body;
