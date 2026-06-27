@@ -3,10 +3,10 @@ import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { authenticateUser } from './auth.js'; 
 import { getIsraelTimeForDB } from './timeUtils.js';
 
-// 1. קבלת רשימת הקבצים + שליפת שם המקליט מתוך קובץ ה-TXT
+// 1. קבלת רשימת הקבצים + שליפת שם המקליט מתוך קובץ ה-TXT (עם תמיכה בטעינת קבצים נוספים)
 export async function handleGetMessages(request, env) {
     const body = await request.json();
-    const { userToken } = body; 
+    const { userToken, filesLimit = 40, filesFrom = 0 } = body; 
 
     const FOLDER_PATH = 'ivr2:/1/2'; 
 
@@ -17,7 +17,8 @@ export async function handleGetMessages(request, env) {
     if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
 
     const token = env.YEMOT_TOKEN;
-    const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=40`;
+    // הוספת filesLimit ו-filesFrom ל-URL
+    const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=${filesLimit}&filesFrom=${filesFrom}`;
     
     try {
         const response = await fetch(url);
