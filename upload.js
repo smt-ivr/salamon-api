@@ -92,7 +92,8 @@ export async function handleUploadMessage(request, env) {
             } catch (e) {}
 
             const userName = await getNameFromIni(user.phone, token);
-            const displayName = userName ? `${userName} (דרך האתר)` : `משתמש אתר (דרך האתר)`;
+            // כאן שונה הסימון להיות [WEB] במקום "דרך האתר"
+            const displayName = userName ? `${userName} [WEB]` : `משתמש אתר [WEB]`;
 
             let did = "0733517857"; 
             let recDate = "";
