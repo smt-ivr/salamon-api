@@ -38,7 +38,7 @@ export async function handleGetMessages(request, env) {
             
             let recorderName = "";
             let recorderPhone = ""; 
-            let fromWeb = false; // דגל זיהוי האם הועלה מהאתר
+            let fromWebType = false; // false = phone, 'record' = web record, 'file' = web file upload
 
             try {
                 const txtRes = await fetch(txtUrl);
@@ -51,12 +51,18 @@ export async function handleGetMessages(request, env) {
                         if (txtData.contents.includes('ValName-')) {
                             recorderName = txtData.contents.split('ValName-')[1].trim();
                             
-                            // חיתוך סימניות רשת והפעלת הדגל
-                            if (recorderName.includes('[WEB]')) {
-                                fromWeb = true;
+                            // זיהוי מקור ההודעה לפי התגיות
+                            if (recorderName.includes('[WEB_FILE]')) {
+                                fromWebType = 'file';
+                                recorderName = recorderName.replace('[WEB_FILE]', '').trim();
+                            } else if (recorderName.includes('[WEB_REC]')) {
+                                fromWebType = 'record';
+                                recorderName = recorderName.replace('[WEB_REC]', '').trim();
+                            } else if (recorderName.includes('[WEB]')) { 
+                                fromWebType = 'record'; // תאימות למודל הקודם
                                 recorderName = recorderName.replace('[WEB]', '').trim();
-                            } else if (recorderName.includes('(דרך האתר)')) { // תאימות לאחור
-                                fromWeb = true;
+                            } else if (recorderName.includes('(דרך האתר)')) { 
+                                fromWebType = 'record'; // תאימות למודל הישן ביותר
                                 recorderName = recorderName.replace('(דרך האתר)', '').trim();
                             }
 
@@ -76,7 +82,7 @@ export async function handleGetMessages(request, env) {
                 mtime: file.mtime,
                 valName: recorderName || file.phone || "מערכת / לא מזוהה",
                 isOutgoing: isOutgoing,
-                fromWeb: fromWeb // החזרת הדגל ללקוח
+                fromWebType: fromWebType // העברת סוג המקור ללקוח
             };
         }));
 
