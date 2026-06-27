@@ -152,7 +152,7 @@ export class VerificationSystem {
         }
     }
 
-    // --- חדש: בקשת איפוס סיסמה ושליחת קוד אימות במייל דרך Resend ---
+    // --- בקשת איפוס סיסמה ושליחת קוד אימות במייל דרך Resend ---
     async requestPasswordReset(identifier, ip, env) {
         if (!env.RESEND_API_KEY) {
             return { success: false, message: "שגיאת שרת: חסר מפתח אימות למערכת האימיילים (RESEND_API_KEY)." };
@@ -160,9 +160,9 @@ export class VerificationSystem {
 
         const nowIsraelStr = getIsraelTimeForDB();
 
-        // חיפוש המשתמש לפי אימייל או מספר טלפון
+        // חיפוש המשתמש - שולף גם את ההגדרה לקבלת אימיילים
         const user = await this.db.prepare(
-            "SELECT phone, email FROM users WHERE phone = ? OR email = ?"
+            "SELECT phone, email, receive_emails FROM users WHERE phone = ? OR email = ?"
         ).bind(identifier, identifier).first();
 
         if (!user) {
@@ -170,6 +170,9 @@ export class VerificationSystem {
         }
         if (!user.email) {
             return { success: false, message: "לא מוגדרת כתובת אימייל מעודכנת לחשבון זה. אנא פנה למנהל המערכת." };
+        }
+        if (user.receive_emails === 0) {
+            return { success: false, message: "חשבונך הוגדר שלא לקבל הודעות אימייל מהמערכת. לא ניתן לשלוח קוד איפוס לאימייל שלך. אנא פנה למנהל או היעזר בצינתוק." };
         }
 
         // בדיקת חסימות כלליות
