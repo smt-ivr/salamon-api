@@ -2,14 +2,18 @@
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
 
-// פונקציית עזר גלובלית לאימות משתמש - מעודכנת לטוקנים בלבד (ללא סיסמאות חשופות)
+// פונקציית עזר גלובלית לאימות משתמש - מזהה גם את מקור ההתחברות
 export async function authenticateUser(db, userToken) {
     if (!userToken) return null;
 
     const session = await db.prepare("SELECT * FROM user_tokens WHERE id = ?").bind(userToken).first();
     if (!session) return null;
 
-    if (session.token_type === 'temporary') {
+    // זיהוי סוג ההתחברות מתוך סוג הטוקן
+    const isTemp = session.token_type === 'temporary' || session.token_type === 'password_temp';
+    const authMethod = session.token_type === 'google_perm' ? 'google' : 'password';
+
+    if (isTemp) {
         if (isPastIsraelTime(session.expires_at)) {
             await db.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
             return null;
@@ -28,7 +32,15 @@ export async function authenticateUser(db, userToken) {
         ).bind(nowStr, userToken).run();
     }
 
-    return await db.prepare("SELECT * FROM users WHERE phone = ?").bind(session.phone).first();
+    const user = await db.prepare("SELECT * FROM users WHERE phone = ?").bind(session.phone).first();
+    
+    // הזרקת המידע על הטוקן אל תוך אובייקט המשתמש לצורך שימוש בפונקציות הבאות
+    if (user) {
+        user.token_type = isTemp ? 'temporary' : 'permanent';
+        user.auth_method = authMethod;
+    }
+    
+    return user;
 }
 
 // 1. צומת הכוונה חכם
@@ -120,8 +132,10 @@ export async function handleRegister(request, env) {
     try {
         const safeEmail = email || null;
         const nowIsraelStr = getIsraelTimeForDB();
+        // הוספת ערכי ברירת מחדל לשדות החדשים בעת ההרשמה (מיילים מופעל, כניסה רק גוגל מכובה)
         await env.DB.prepare(
-            `INSERT INTO users (phone, email, password, can_record, can_upload, created_at) VALUES (?, ?, ?, 1, 0, ?)`
+            `INSERT INTO users (phone, email, password, can_record, can_upload, receive_emails, google_login_only, created_at) 
+             VALUES (?, ?, ?, 1, 0, 1, 0, ?)`
         ).bind(phone, safeEmail, password, nowIsraelStr).run();
 
         await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
@@ -152,12 +166,17 @@ export async function handleLogin(request, env) {
         return Response.json({ error: "שם משתמש או סיסמה שגויים" }, { status: 401 });
     }
 
+    if (user.google_login_only === 1) {
+        return Response.json({ error: "חשבון זה הוגדר לכניסה באמצעות חשבון גוגל בלבד. אנא התחברו דרך כפתור גוגל." }, { status: 403 });
+    }
+
     const sessionToken = crypto.randomUUID();
-    const tokenType = rememberMe ? 'permanent' : 'temporary';
+    // סיווג סוג הטוקן גם לפי אמצעי ההתחברות (סיסמה)
+    const tokenType = rememberMe ? 'password_perm' : 'password_temp';
     const createdAtStr = getIsraelTimeForDB();
     
     let expiresAtStr = null;
-    if (tokenType === 'temporary') {
+    if (!rememberMe) {
         expiresAtStr = getFutureIsraelTimeForDB(30);
     }
 
@@ -184,7 +203,7 @@ export async function handleLogin(request, env) {
     });
 }
 
-// 4. שליפת פרופיל משתמש
+// 4. שליפת פרופיל משתמש (מעודכן עם נתונים חדשים)
 export async function handleGetProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken } = body;
@@ -210,7 +229,11 @@ export async function handleGetProfile(request, env) {
             email: user.email || "",
             connectedToTzintukim: phoneStatus.active,
             canUpload: !!user.can_upload,
-            canRecord: user.can_record !== 0
+            canRecord: user.can_record !== 0,
+            receiveEmails: user.receive_emails !== 0, // מופעל כברירת מחדל
+            googleLoginOnly: user.google_login_only === 1,
+            authMethod: user.auth_method,
+            tokenType: user.token_type
         }
     });
 }
@@ -230,10 +253,10 @@ export async function handleLogout(request, env) {
     }
 }
 
-// 6. עדכון פרופיל (הוסר שינוי סיסמה, משתמש בטוקן בלבד)
+// 6. עדכון פרופיל (מעודכן עם הגדרות חדשות ודרישת סיסמה חכמה)
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
-    const { userToken, newEmail } = body;
+    const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
 
     if (!userToken) {
         return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
@@ -245,19 +268,32 @@ export async function handleUpdateProfile(request, env) {
         return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
     }
 
+    // בדיקת סיסמה מתבצעת אך ורק אם המשתמש התחבר באמצעות סיסמה
+    if (user.auth_method === 'password') {
+        if (!password) {
+            return Response.json({ error: "חובה להזין את הסיסמה שלך על מנת לשמור שינויים." }, { status: 400 });
+        }
+        if (user.password !== password) {
+            return Response.json({ error: "הסיסמה שהוזנה שגויה, לא ניתן לשמור שינויים." }, { status: 401 });
+        }
+    }
+
     try {
         const finalEmail = newEmail === undefined ? user.email : (newEmail || null);
+        const finalReceive = receiveEmails === undefined ? (user.receive_emails ?? 1) : (receiveEmails ? 1 : 0);
+        const finalGoogleOnly = googleLoginOnly === undefined ? (user.google_login_only ?? 0) : (googleLoginOnly ? 1 : 0);
 
-        await env.DB.prepare("UPDATE users SET email = ? WHERE phone = ?")
-            .bind(finalEmail, user.phone).run();
+        await env.DB.prepare(
+            "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
+        ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
 
-        return Response.json({ success: true, message: "הפרטים עודכנו בהצלחה" });
+        return Response.json({ success: true, message: "הפרטים וההגדרות עודכנו בהצלחה" });
     } catch (e) {
         return Response.json({ error: "שגיאה בעדכון הנתונים. ייתכן והמייל תפוס." }, { status: 400 });
     }
 }
 
-// 7. שינוי סיסמה (נתיב חדש לחלוטין)
+// 7. שינוי סיסמה
 export async function handleChangePassword(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, oldPassword, newPassword, newPasswordConfirm, logoutAllDevices } = body;
@@ -288,11 +324,8 @@ export async function handleChangePassword(request, env) {
     }
 
     try {
-        // עדכון הסיסמה
-        await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?")
-            .bind(newPassword, user.phone).run();
+        await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?").bind(newPassword, user.phone).run();
 
-        // ניתוק משתמשים במידת הצורך (מחיקת טוקנים)
         if (logoutAllDevices) {
             await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(user.phone).run();
             return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה וכל המכשירים נותקו. אנא התחברו מחדש למערכת." });
@@ -304,7 +337,7 @@ export async function handleChangePassword(request, env) {
     }
 }
 
-// 8. איפוס סיסמה (שכחתי סיסמה)
+// 8. איפוס סיסמה
 export async function handleResetPasswordConfirm(request, env) {
     const body = await request.json().catch(() => ({}));
     const { phone, password, passwordConfirm, token } = body;
@@ -338,7 +371,7 @@ export async function handleResetPasswordConfirm(request, env) {
     }
 }
 
-// 9. התחברות באמצעות גוגל (טוקן קבוע - זכור אותי)
+// 9. התחברות באמצעות גוגל (טוקן קבוע)
 export async function handleGoogleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { token } = body;
@@ -360,18 +393,20 @@ export async function handleGoogleLogin(request, env) {
         }
 
         const email = googleData.email;
-
         const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
 
         if (!user) {
             return Response.json({ 
-                error: `כתובת האימייל (${email}) אינה משויכת לאף חשבון במערכת. עלייך להירשם תחילה דרך מספר טלפון.` 
+                error: `כתובת האימייל (${email}) אינה משויכת לאף חשבון במערכת. עלייך להירשם תחילה דרך מספר טלפון ולעדכן את האימייל בפרופיל.` 
             }, { status: 404 });
         }
 
         const sessionToken = crypto.randomUUID();
         const createdAtStr = getIsraelTimeForDB();
         const expiresAtStr = null; 
+        
+        // סיווג סוג הטוקן גם לפי אמצעי ההתחברות (גוגל)
+        const tokenType = 'google_perm';
 
         await env.DB.prepare(
             `DELETE FROM user_tokens 
@@ -387,7 +422,7 @@ export async function handleGoogleLogin(request, env) {
         await env.DB.prepare(
             `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at) 
              VALUES (?, ?, ?, ?, ?, ?)`
-        ).bind(sessionToken, user.phone, 'permanent', createdAtStr, expiresAtStr, createdAtStr).run();
+        ).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr).run();
 
         return Response.json({
             success: true,
