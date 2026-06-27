@@ -39,6 +39,9 @@ import { handleGetListenStats } from './listenStats.js';
 // ייבוא ממשק API לימות המשיח (קריאת נתוני האזנה טלפונית)
 import { handlePhoneApiStats } from './phoneApi.js';
 
+// ייבוא פונקציית הסטטיסטיקה החדשה
+import { handleGetSystemStats } from './stats.js';
+
 export default {
     async fetch(request, env, ctx) {
         const corsHeaders = {
@@ -120,6 +123,9 @@ export default {
             }
             else if (request.method === "POST" && pathname.endsWith("/api/messages/stats")) {
                 response = await handleGetListenStats(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/stats/members")) {
+                response = await handleGetSystemStats(request, env); // הנתיב החדש
             }
 
             // ============================================
@@ -241,8 +247,6 @@ export default {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
             }
 
-            // החזרת התגובה עם כותרי CORS
-            // אם זו תגובה של טקסט פשוט (כמו ה-API לטלפון), נכבד את זה ולא נעטוף ב-JSON
             const isPlainText = response.headers && response.headers.get('Content-Type') === 'text/plain; charset=utf-8';
             let newResponse = isPlainText ? response : new Response(response.body, response);
             
