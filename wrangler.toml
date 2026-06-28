@@ -1,4 +1,4 @@
-name = "my-auth-project"
+name = "salamon-api"
 main = "worker.js"
 compatibility_date = "2026-05-24"
 
