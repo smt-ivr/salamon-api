@@ -151,10 +151,11 @@ export class VerificationSystem {
         }
 
         const nowIsraelStr = getIsraelTimeForDB();
+        const searchIdentifier = String(identifier).toLowerCase();
 
         const user = await this.db.prepare(
             "SELECT phone, email, receive_emails FROM users WHERE phone = ? OR email = ?"
-        ).bind(identifier, identifier).first();
+        ).bind(searchIdentifier, searchIdentifier).first();
 
         if (!user) return { success: false, message: "לא נמצא משתמש רשום עם פרטים אלו במערכת." };
         if (!user.email) return { success: false, message: "לא מוגדרת כתובת אימייל מעודכנת לחשבון זה. אנא פנה למנהל המערכת." };
