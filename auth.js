@@ -238,7 +238,7 @@ export async function handleLogout(request, env) {
     } catch (error) { return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 }); }
 }
 
-// 6. עדכון פרופיל (הגרסה המעודכנת)
+// 6. עדכון פרופיל (עם מנגנון אבטחה כפול והודעות מפורטות)
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
@@ -260,41 +260,57 @@ export async function handleUpdateProfile(request, env) {
     let messages = [];
     let errors = [];
 
+    // עדכון קבלת התראות - עם הודעה מפורטת
     if (receiveEmails !== undefined) {
         const requestedReceive = receiveEmails ? 1 : 0;
         if (requestedReceive !== finalReceive) {
             finalReceive = requestedReceive;
-            messages.push("הגדרות קבלת המיילים עודכנו.");
-        }
-    }
-
-    if (googleLoginOnly !== undefined) {
-        const requestedGoogleOnly = googleLoginOnly ? 1 : 0;
-        if (requestedGoogleOnly !== finalGoogleOnly) {
-            
-            // בדיקה האם קיים אימייל קיים או שסופק אחד בבקשה הנוכחית
-            const targetEmail = newEmail !== undefined ? (newEmail || null) : user.email;
-            
-            if (requestedGoogleOnly === 1 && user.auth_method === 'password') {
-                errors.push("לא ניתן להפעיל 'כניסה באמצעות גוגל בלבד' כשמחוברים עם סיסמה. (ההגדרה נדחתה)");
-            } else if (requestedGoogleOnly === 1 && !targetEmail) {
-                // חסימה אם מנסים להפעיל כניסה מגוגל בלבד ללא אימייל מעודכן
-                errors.push("לא ניתן להפעיל 'כניסה באמצעות גוגל בלבד' ללא כתובת אימייל מעודכנת. (ההגדרה נדחתה)");
+            if (finalReceive === 1) {
+                messages.push("קבלת התראות אבטחה לאימייל הופעלה.");
             } else {
-                finalGoogleOnly = requestedGoogleOnly;
-                messages.push("הגדרת הכניסה באמצעות גוגל עודכנה.");
+                messages.push("קבלת התראות אבטחה לאימייל בוטלה.");
             }
         }
     }
 
+    // הגדרת כניסה מגוגל בלבד (עם לוגיקת האבטחה שתיקנו)
+    if (googleLoginOnly !== undefined) {
+        const requestedGoogleOnly = googleLoginOnly ? 1 : 0;
+        if (requestedGoogleOnly !== finalGoogleOnly) {
+            
+            const targetEmail = newEmail !== undefined ? (newEmail || null) : user.email;
+            
+            if (requestedGoogleOnly === 1) {
+                if (user.auth_method !== 'google') {
+                    errors.push("כדי להפעיל כניסה מגוגל בלבד, עליך להיות מחובר כעת באמצעות חשבון הגוגל שלך.");
+                } else if (!targetEmail) {
+                    errors.push("לא ניתן להפעיל כניסה מגוגל בלבד ללא כתובת אימייל מעודכנת.");
+                } else if (targetEmail !== user.email) {
+                    errors.push("לא ניתן לנעול כניסה על כתובת מייל חדשה שטרם אומתה. יש לשמור את המייל החדש, להתחבר איתו דרך גוגל, ורק אז להפעיל את הנעילה.");
+                } else {
+                    finalGoogleOnly = requestedGoogleOnly;
+                    messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' הופעלה בהצלחה.");
+                }
+            } else {
+                finalGoogleOnly = requestedGoogleOnly;
+                messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' בוטלה. כעת ניתן להתחבר למערכת גם עם סיסמה.");
+            }
+        }
+    }
+
+    // עדכון כתובת אימייל (עם הודעה המפרטת את הכתובת החדשה)
     if (newEmail !== undefined) {
         const requestedEmail = newEmail || null;
         if (requestedEmail !== user.email) {
-            if (user.google_login_only === 1 && finalGoogleOnly === 1) {
-                errors.push("לא ניתן לשנות אימייל כש'כניסה מגוגל בלבד' מופעלת. (עדכון המייל נדחה)");
+            if (finalGoogleOnly === 1) {
+                errors.push("כדי לשנות אימייל יש לכבות תחילה את נעילת הכניסה מגוגל, ולאמת את המייל החדש בהתחברות הבאה.");
             } else {
                 finalEmail = requestedEmail;
-                messages.push("כתובת האימייל עודכנה.");
+                if (requestedEmail) {
+                    messages.push(`כתובת האימייל המקושרת לחשבון עודכנה בהצלחה לכתובת: ${requestedEmail}`);
+                } else {
+                    messages.push("כתובת האימייל המקושרת לחשבון הוסרה.");
+                }
             }
         }
     }
@@ -320,9 +336,13 @@ export async function handleUpdateProfile(request, env) {
         const hasErrors = errors.length > 0;
         let finalMessage = "";
         
-        if (isSuccess && hasErrors) finalMessage = "בוצע עדכון חלקי:\n" + messages.join("\n") + "\n\nשגיאות:\n" + errors.join("\n");
-        else if (isSuccess && !hasErrors) finalMessage = "כל השינויים נשמרו בהצלחה:\n" + messages.join("\n");
-        else if (!isSuccess && hasErrors) return Response.json({ error: "העדכון נכשל לחלוטין:\n" + errors.join("\n") }, { status: 400 });
+        if (isSuccess && hasErrors) {
+            finalMessage = "בוצע עדכון חלקי:\n" + messages.join("\n") + "\n\nשגיאות:\n" + errors.join("\n");
+        } else if (isSuccess && !hasErrors) {
+            finalMessage = "כל השינויים נשמרו בהצלחה:\n" + messages.join("\n");
+        } else if (!isSuccess && hasErrors) {
+            return Response.json({ error: "העדכון נכשל לחלוטין:\n" + errors.join("\n") }, { status: 400 });
+        }
 
         return Response.json({ success: true, message: finalMessage, partialUpdate: isSuccess && hasErrors });
     } catch (e) {
