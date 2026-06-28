@@ -175,3 +175,4 @@ export async function sendSecurityAlert(env, to, name, alertType, ip, authMethod
     const textFallback = content.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
     return await sendEmail(env, to, subject, getBaseTemplate(title, content, unsubscribeUrl), textFallback);
 }
+};
