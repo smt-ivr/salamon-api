@@ -65,7 +65,7 @@ export async function sendVerificationCodeEmail(env, to, name, code, ip) {
     const token = crypto.randomUUID();
     const nowStr = getIsraelTimeForDB();
     await env.DB.prepare("INSERT INTO unsubscribe_tokens (token, email, created_at) VALUES (?, ?, ?)").bind(token, to, nowStr).run();
-    const unsubscribeUrl = `https://smt-tel-manager.netlify.app/unsubscribe?token=${token}`;
+    const unsubscribeUrl = `https://smti.uk/salamon/unsubscribe?token=${token}`;
 
     const subject = 'איפוס סיסמה - קוד אימות מאתר עכשיו סלומון';
     const title = 'בקשה לאיפוס סיסמה';
