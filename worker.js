@@ -18,7 +18,8 @@ import {
     handleAdminGetUsers,
     handleAdminUpdateUser,
     handleAdminGetUserFullProfile,       
-    handleAdminDisconnectUserTokens      
+    handleAdminDisconnectUserTokens,
+    handleAdminCreateUser          // <-- נוסף
 } from './admin.js';
 
 import { VerificationSystem } from './verification.js';
@@ -253,6 +254,9 @@ export default {
             }
             else if (request.method === "POST" && pathname.endsWith("/api/admin/user-tokens/delete")) {
                 response = await handleAdminDisconnectUserTokens(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/create-user")) {
+                response = await handleAdminCreateUser(request, env);
             }
             else {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
