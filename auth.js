@@ -238,7 +238,7 @@ export async function handleLogout(request, env) {
     } catch (error) { return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 }); }
 }
 
-// 6. עדכון פרופיל (שולח התראת אבטחה במידה והופעל מצב גוגל בלבד)
+// 6. עדכון פרופיל
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
@@ -301,21 +301,22 @@ export async function handleUpdateProfile(request, env) {
             "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
         ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
 
-        // במידה ומצב 'גוגל בלבד' הופעל לראשונה כעת -> שולחים התראה למייל המעודכן!
+        // הוספת await לשליחת המייל כדי להבטיח שה-Worker לא יהרוג את התהליך לפני סיום השליחה
         if (finalGoogleOnly === 1 && user.google_login_only === 0 && finalEmail) {
-            const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
-            const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
-            // שליחה ללא עיכוב הלקוח (Promise שרץ ברקע)
-            sendSecurityAlert(env, finalEmail, userName, 'google_only', userIp, null).catch(e => console.error(e));
+            try {
+                const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
+                const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
+                await sendSecurityAlert(env, finalEmail, userName, 'google_only', userIp, null);
+            } catch(e) { console.error("Error sending google_only alert", e); }
         }
 
         const isSuccess = messages.length > 0;
         const hasErrors = errors.length > 0;
         let finalMessage = "";
         
-        if (isSuccess && hasErrors) finalMessage = "בוצע עדכון חלקי:\n" + messages.join("\n") + "\n\nשגיאות:\n" + errors.join("\n");
-        else if (isSuccess && !hasErrors) finalMessage = "כל השינויים נשמרו בהצלחה:\n" + messages.join("\n");
-        else if (!isSuccess && hasErrors) return Response.json({ error: "העדכון נכשל לחלוטין:\n" + errors.join("\n") }, { status: 400 });
+        if (isSuccess && hasErrors) finalMessage = "בוצע עדכון חלקי:\\n" + messages.join("\\n") + "\\n\\nשגיאות:\\n" + errors.join("\\n");
+        else if (isSuccess && !hasErrors) finalMessage = "כל השינויים נשמרו בהצלחה:\\n" + messages.join("\\n");
+        else if (!isSuccess && hasErrors) return Response.json({ error: "העדכון נכשל לחלוטין:\\n" + errors.join("\\n") }, { status: 400 });
 
         return Response.json({ success: true, message: finalMessage, partialUpdate: isSuccess && hasErrors });
     } catch (e) {
@@ -323,7 +324,7 @@ export async function handleUpdateProfile(request, env) {
     }
 }
 
-// 7. שינוי סיסמה (מוציא התראה למייל על שינוי)
+// 7. שינוי סיסמה
 export async function handleChangePassword(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, oldPassword, newPassword, newPasswordConfirm, logoutAllDevices } = body;
@@ -340,11 +341,13 @@ export async function handleChangePassword(request, env) {
     try {
         await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?").bind(newPassword, user.phone).run();
 
-        // שליחת התראת אבטחה למייל בגין שינוי הסיסמה
+        // הוספת await במקום catch רגיל כדי שהמייל יישלח במלואו
         if (user.email && user.receive_emails !== 0) {
-            const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
-            const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
-            sendSecurityAlert(env, user.email, userName, 'password_change', userIp, user.auth_method).catch(e => console.error(e));
+            try {
+                const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
+                const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
+                await sendSecurityAlert(env, user.email, userName, 'password_change', userIp, user.auth_method);
+            } catch(e) { console.error("Error sending password_change alert", e); }
         }
 
         if (logoutAllDevices) {
@@ -358,7 +361,7 @@ export async function handleChangePassword(request, env) {
     }
 }
 
-// 8. איפוס סיסמה (מוציא התראה למייל על האיפוס)
+// 8. איפוס סיסמה
 export async function handleResetPasswordConfirm(request, env) {
     const body = await request.json().catch(() => ({}));
     const { phone, password, passwordConfirm, token } = body;
@@ -380,11 +383,13 @@ export async function handleResetPasswordConfirm(request, env) {
         await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?").bind(password, phone).run();
         await env.DB.prepare("UPDATE verification_sessions SET status = 'used' WHERE id = ?").bind(session.id).run();
 
-        // שליחת התראת אבטחה בגין האיפוס החיצוני שהושלם
+        // הוספת await במקום catch רגיל כדי שהמייל יישלח במלואו
         if (user && user.email && user.receive_emails !== 0) {
-            const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
-            const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
-            sendSecurityAlert(env, user.email, userName, 'password_reset', userIp, null).catch(e => console.error(e));
+            try {
+                const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
+                const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
+                await sendSecurityAlert(env, user.email, userName, 'password_reset', userIp, null);
+            } catch(e) { console.error("Error sending password_reset alert", e); }
         }
 
         return Response.json({ success: true, message: "הסיסמה שלך אופסה ועודכנה בהצלחה!" });
