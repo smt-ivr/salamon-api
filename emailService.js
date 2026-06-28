@@ -1,4 +1,5 @@
 // emailService.js
+import { getIsraelTimeForDB } from './timeUtils.js';
 
 // פונקציית ליבה לשליחת אימייל דרך Resend
 export async function sendEmail(env, to, subject, html, text) {
@@ -28,8 +29,8 @@ export async function sendEmail(env, to, subject, html, text) {
     }
 }
 
-// תבנית בסיס מעוצבת, ממוקדת ורספונסיבית לאימיילים
-const getBaseTemplate = (title, contentHtml) => `
+// תבנית בסיס מעוצבת, ממוקדת ורספונסיבית לאימיילים (כולל קישור הסרה)
+const getBaseTemplate = (title, contentHtml, unsubscribeUrl = null) => `
 <div style="direction: rtl; font-family: 'Segoe UI', Tahoma, Arial, sans-serif; background-color: #f4f7f6; padding: 20px 10px;">
     <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0;">
         
@@ -44,10 +45,11 @@ const getBaseTemplate = (title, contentHtml) => `
             ${contentHtml}
         </div>
         
-        <!-- Footer (ללא אזהרות פריצה, נטו זכויות יוצרים ולוגו) -->
+        <!-- Footer -->
         <div style="background-color: #f8fafc; padding: 15px 25px; text-align: center; border-top: 1px solid #e2e8f0;">
             <img src="https://smt-tel-manager.netlify.app/smt.png" alt="SMT" style="height: 36px; opacity: 0.8; margin-bottom: 8px; pointer-events: none; user-select: none; -webkit-user-drag: none;">
             <p style="margin: 0; font-size: 12px; color: #94a3b8;">© ${new Date().getFullYear()} עכשיו סלומון מבית SMT. כל הזכויות שמורות.</p>
+            ${unsubscribeUrl ? `<p style="margin: 15px 0 0 0; font-size: 12px;"><a href="${unsubscribeUrl}" style="color: #ef4444; text-decoration: underline;">חסום כתובת אימייל זו מקבלת הודעות עתידיות</a></p>` : ''}
         </div>
         
     </div>
@@ -55,6 +57,16 @@ const getBaseTemplate = (title, contentHtml) => `
 
 // פונקציה לשליחת קוד אימות
 export async function sendVerificationCodeEmail(env, to, name, code, ip) {
+    // 1. בדיקה מול הרשימה השחורה המיוחדת
+    const isBlocked = await env.DB.prepare("SELECT 1 FROM email_blocklist WHERE email = ?").bind(to).first();
+    if (isBlocked) return false;
+
+    // 2. יצירת טוקן לחסימה
+    const token = crypto.randomUUID();
+    const nowStr = getIsraelTimeForDB();
+    await env.DB.prepare("INSERT INTO unsubscribe_tokens (token, email, created_at) VALUES (?, ?, ?)").bind(token, to, nowStr).run();
+    const unsubscribeUrl = `https://smt-tel-manager.netlify.app/unsubscribe?token=${token}`;
+
     const subject = 'איפוס סיסמה - קוד אימות מאתר עכשיו סלומון';
     const title = 'בקשה לאיפוס סיסמה';
     const ipBadge = `<code style="background:#f1f5f9; padding:2px 6px; border-radius:4px; border: 1px solid #cbd5e1; color: #0f172a; font-size: 13px; direction: ltr; display: inline-block;">${ip}</code>`;
@@ -75,18 +87,26 @@ export async function sendVerificationCodeEmail(env, to, name, code, ip) {
     `;
 
     const text = `שלום ${name},\n\nקיבלנו בקשה לאיפוס הסיסמה לחשבונך מכתובת ה-IP: ${ip}.\n\nקוד האימות שלך הוא: ${code}\n\nהקוד בתוקף ל-10 דקות.`;
-    return await sendEmail(env, to, subject, getBaseTemplate(title, content), text);
+    return await sendEmail(env, to, subject, getBaseTemplate(title, content, unsubscribeUrl), text);
 }
 
 // פונקציה לשליחת התראות אבטחה שונות
 export async function sendSecurityAlert(env, to, name, alertType, ip, authMethod) {
+    // 1. בדיקה מול הרשימה השחורה המיוחדת
+    const isBlocked = await env.DB.prepare("SELECT 1 FROM email_blocklist WHERE email = ?").bind(to).first();
+    if (isBlocked) return false;
+
+    // 2. יצירת טוקן לחסימה
+    const token = crypto.randomUUID();
+    const nowStr = getIsraelTimeForDB();
+    await env.DB.prepare("INSERT INTO unsubscribe_tokens (token, email, created_at) VALUES (?, ?, ?)").bind(token, to, nowStr).run();
+    const unsubscribeUrl = `https://smt-tel-manager.netlify.app/unsubscribe?token=${token}`;
+
     let title = '';
     let content = '';
     let subject = '';
 
     const ipBadge = `<code style="background:#f1f5f9; padding:2px 6px; border-radius:4px; border: 1px solid #cbd5e1; color: #0f172a; font-size: 13px; direction: ltr; display: inline-block;">${ip}</code>`;
-    
-    // אזהרת פריצה - מוטמעת רק בתוך התראות אבטחה של שינויים בפועל
     const warningText = `<p style="margin: 15px 0 0 0; font-size: 13.5px; color: #ef4444; font-weight: 700; background: #fef2f2; padding: 10px; border-radius: 6px; border: 1px solid #fecaca; text-align: center;">אם פעולה זו לא בוצעה על ידכם, נא פנו להנהלת המערכת באופן מיידי.</p>`;
 
     if (alertType === 'google_only') {
@@ -129,5 +149,5 @@ export async function sendSecurityAlert(env, to, name, alertType, ip, authMethod
     }
 
     const textFallback = content.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
-    return await sendEmail(env, to, subject, getBaseTemplate(title, content), textFallback);
+    return await sendEmail(env, to, subject, getBaseTemplate(title, content, unsubscribeUrl), textFallback);
 }
