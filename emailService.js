@@ -75,15 +75,13 @@ const getBaseTemplate = (title, contentHtml, unsubscribeUrl = null) => `
 
 // פונקציה לשליחת קוד אימות
 export async function sendVerificationCodeEmail(env, to, name, code, ip) {
-    // 1. בדיקה מול הרשימה השחורה המיוחדת
     const isBlocked = await env.DB.prepare("SELECT 1 FROM email_blocklist WHERE email = ?").bind(to).first();
     if (isBlocked) return false;
 
-    // 2. יצירת טוקן לחסימה
     const token = crypto.randomUUID();
     const nowStr = getIsraelTimeForDB();
     await env.DB.prepare("INSERT INTO unsubscribe_tokens (token, email, created_at) VALUES (?, ?, ?)").bind(token, to, nowStr).run();
-    const unsubscribeUrl = `https://smt-tel-manager.netlify.app/unsubscribe?token=${token}`;
+    const unsubscribeUrl = `https://smti.uk/salamon/unsubscribe?token=${token}`;
 
     const subject = 'איפוס סיסמה - קוד אימות מאתר עכשיו סלומון';
     const title = 'בקשה לאיפוס סיסמה';
@@ -110,15 +108,13 @@ export async function sendVerificationCodeEmail(env, to, name, code, ip) {
 
 // פונקציה לשליחת התראות אבטחה שונות
 export async function sendSecurityAlert(env, to, name, alertType, ip, authMethod) {
-    // 1. בדיקה מול הרשימה השחורה המיוחדת
     const isBlocked = await env.DB.prepare("SELECT 1 FROM email_blocklist WHERE email = ?").bind(to).first();
     if (isBlocked) return false;
 
-    // 2. יצירת טוקן לחסימה
     const token = crypto.randomUUID();
     const nowStr = getIsraelTimeForDB();
     await env.DB.prepare("INSERT INTO unsubscribe_tokens (token, email, created_at) VALUES (?, ?, ?)").bind(token, to, nowStr).run();
-    const unsubscribeUrl = `https://smt-tel-manager.netlify.app/unsubscribe?token=${token}`;
+    const unsubscribeUrl = `https://smti.uk/salamon/unsubscribe?token=${token}`;
 
     let title = '';
     let content = '';
@@ -175,4 +171,3 @@ export async function sendSecurityAlert(env, to, name, alertType, ip, authMethod
     const textFallback = content.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
     return await sendEmail(env, to, subject, getBaseTemplate(title, content, unsubscribeUrl), textFallback);
 }
-};
