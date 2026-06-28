@@ -191,7 +191,6 @@ export async function handleLogin(request, env) {
         ).bind(user.phone, user.phone).run();
     }
 
-    // הוספת session_email כ-null מאחר וזו כניסה עם סיסמה
     await env.DB.prepare(
         `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at, session_email) 
          VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -241,7 +240,7 @@ export async function handleLogout(request, env) {
     } catch (error) { return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 }); }
 }
 
-// 6. עדכון פרופיל (עם מנגנון השוואה חכם מול ה-Session)
+// 6. עדכון פרופיל (לוגיקה מסודרת - שלב אחרי שלב)
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
@@ -263,59 +262,66 @@ export async function handleUpdateProfile(request, env) {
     let messages = [];
     let errors = [];
 
-    if (receiveEmails !== undefined) {
-        const requestedReceive = receiveEmails ? 1 : 0;
-        if (requestedReceive !== finalReceive) {
-            finalReceive = requestedReceive;
-            if (finalReceive === 1) {
-                messages.push("קבלת התראות אבטחה לאימייל הופעלה.");
+    // --- שלב 1: איסוף כוונות המשתמש (מה הוא מנסה לעשות) ---
+    const intentEmail = newEmail !== undefined ? (newEmail || null) : user.email;
+    const intentGoogleOnly = googleLoginOnly !== undefined ? (googleLoginOnly ? 1 : 0) : finalGoogleOnly;
+    const intentReceive = receiveEmails !== undefined ? (receiveEmails ? 1 : 0) : finalReceive;
+
+    const wantsToChangeEmail = intentEmail !== user.email;
+    const wantsToChangeGoogleOnly = intentGoogleOnly !== finalGoogleOnly;
+    const wantsToChangeReceive = intentReceive !== finalReceive;
+
+    // --- שלב 2: ולידציה ובניית התוצאה הסופית ---
+    
+    // בדיקות הקשורות לנעילת כניסה מגוגל ולשינוי אימייל מול ה-Session
+    if (intentGoogleOnly === 1) {
+        // המשתמש רוצה שהמערכת תהיה נעולה לגוגל בסוף התהליך (הפעלה כעת או שכבר מופעל)
+        
+        if (user.auth_method !== 'google') {
+            errors.push("כדי להשתמש ב'כניסה מגוגל בלבד', עליך להיות מחובר כעת באמצעות חשבון גוגל.");
+        } else if (!intentEmail) {
+            errors.push("לא ניתן להפעיל כניסה מגוגל בלבד ללא כתובת אימייל מעודכנת.");
+        } else if (intentEmail !== user.session_email) {
+            // המייל חייב להיות זהה במדויק למה שמאומת ב-Session
+            if (finalGoogleOnly === 1 && !wantsToChangeGoogleOnly) {
+                 errors.push("לא ניתן לעדכן כתובת אימייל בזמן שנעילת גוגל מופעלת. אנא כבה את הנעילה קודם.");
             } else {
-                messages.push("קבלת התראות אבטחה לאימייל בוטלה.");
+                 errors.push(`האימייל המבוקש (${intentEmail}) אינו תואם לזה שאיתו התחברת הרגע (${user.session_email}).`);
+            }
+        } else {
+            // הכל תקין, הבקשה עברה את כל החסימות!
+            if (wantsToChangeGoogleOnly) {
+                finalGoogleOnly = 1;
+                messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' הופעלה בהצלחה.");
+            }
+            if (wantsToChangeEmail) {
+                finalEmail = intentEmail;
+                messages.push(`כתובת האימייל עודכנה לכתובת: ${finalEmail}`);
+            }
+        }
+    } else {
+        // המשתמש רוצה שהמערכת תהיה פתוחה לכניסה רגילה (סיסמה)
+        if (wantsToChangeGoogleOnly) {
+            finalGoogleOnly = 0;
+            messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' בוטלה. כעת ניתן להתחבר גם עם סיסמה.");
+        }
+        if (wantsToChangeEmail) {
+            finalEmail = intentEmail;
+            if (finalEmail) {
+                messages.push(`כתובת האימייל עודכנה לכתובת: ${finalEmail}`);
+            } else {
+                messages.push("כתובת האימייל המקושרת לחשבון הוסרה.");
             }
         }
     }
 
-    if (googleLoginOnly !== undefined) {
-        const requestedGoogleOnly = googleLoginOnly ? 1 : 0;
-        if (requestedGoogleOnly !== finalGoogleOnly) {
-            
-            const targetEmail = newEmail !== undefined ? (newEmail || null) : user.email;
-            
-            if (requestedGoogleOnly === 1) {
-                if (user.auth_method !== 'google') {
-                    errors.push("כדי להפעיל כניסה מגוגל בלבד, עליך להיות מחובר כעת באמצעות חשבון הגוגל שלך.");
-                } else if (!targetEmail) {
-                    errors.push("לא ניתן להפעיל כניסה מגוגל בלבד ללא כתובת אימייל מעודכנת.");
-                } else if (targetEmail !== user.session_email) {
-                    // הלוגיקה החדשה: בודקים מול ה-Session ולא מול מה שהיה כתוב במסד!
-                    errors.push(`האימייל (${targetEmail}) אינו תואם לחשבון הגוגל שאיתו אתה מחובר כעת. לא ניתן לנעול את המערכת על אימייל זה.`);
-                } else {
-                    finalGoogleOnly = requestedGoogleOnly;
-                    messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' הופעלה בהצלחה.");
-                }
-            } else {
-                finalGoogleOnly = requestedGoogleOnly;
-                messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' בוטלה. כעת ניתן להתחבר למערכת גם עם סיסמה.");
-            }
-        }
+    // עדכון הגדרות קבלת מיילים
+    if (wantsToChangeReceive) {
+        finalReceive = intentReceive;
+        messages.push(finalReceive === 1 ? "קבלת התראות לאימייל הופעלה." : "קבלת התראות לאימייל בוטלה.");
     }
 
-    if (newEmail !== undefined) {
-        const requestedEmail = newEmail || null;
-        if (requestedEmail !== user.email) {
-            if (finalGoogleOnly === 1) {
-                errors.push("כדי לשנות אימייל יש לכבות תחילה את נעילת הכניסה מגוגל, ולאמת את המייל החדש בהתחברות הבאה.");
-            } else {
-                finalEmail = requestedEmail;
-                if (requestedEmail) {
-                    messages.push(`כתובת האימייל המקושרת לחשבון עודכנה בהצלחה לכתובת: ${requestedEmail}`);
-                } else {
-                    messages.push("כתובת האימייל המקושרת לחשבון הוסרה.");
-                }
-            }
-        }
-    }
-
+    // --- שלב 3: בדיקה סופית לפני שמירה למסד ---
     if (messages.length === 0 && errors.length === 0) {
         return Response.json({ success: true, message: "לא נשלחו נתונים חדשים לעדכון." });
     }
@@ -325,6 +331,7 @@ export async function handleUpdateProfile(request, env) {
             "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
         ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
 
+        // שליחת התראת אבטחה אם הנעילה הופעלה כעת
         if (finalGoogleOnly === 1 && user.google_login_only === 0 && finalEmail) {
             try {
                 const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
