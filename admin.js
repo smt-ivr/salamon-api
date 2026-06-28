@@ -1,101 +1,173 @@
-import { checkPhoneStatus, getNameFromIni } from './yemot.js';
+// admin.js
+import { checkPhoneStatus, getAllYemotUsers, getAllNamesFromIni } from './yemot.js';
+import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
+
+// פונקציית עזר לאימות מנהל
+async function verifyAdmin(env, adminToken) {
+    if (!adminToken || !adminToken.includes(':')) return false;
+    const [username, password] = adminToken.split(':');
+    const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
+    return !!admin;
+}
 
 export async function handleAdminLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { username, password } = body;
 
-    // הגנה מקריסת המסד
-    if (!username || !password) {
-        return Response.json({ error: "חובה להזין שם משתמש וסיסמה" }, { status: 400 });
-    }
+    if (!username || !password) return Response.json({ error: "חובה להזין שם משתמש וסיסמה" }, { status: 400 });
 
-    const admin = await env.DB.prepare("SELECT * FROM admins WHERE username = ? AND password = ?")
-        .bind(username, password).first();
+    const admin = await env.DB.prepare("SELECT * FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
 
-    if (!admin) {
-        return Response.json({ error: "שם משתמש או סיסמת מנהל שגויים" }, { status: 401 });
-    }
+    if (!admin) return Response.json({ error: "שם משתמש או סיסמת מנהל שגויים" }, { status: 401 });
 
     return Response.json({ 
         success: true, 
         message: "התחברת כמנהל בהצלחה", 
-        admin: {
-            username: admin.username,
-            password: admin.password
-        },
         adminToken: `${admin.username}:${admin.password}` 
     });
 }
 
+// 1. קבלת כל המשתמשים - סנכרון של ימות המשיח ומסד הנתונים
 export async function handleAdminGetUsers(request, env) {
     const body = await request.json().catch(() => ({}));
-    const { adminToken } = body;
-    
-    if (!adminToken || !adminToken.includes(':')) {
-        return Response.json({ error: "חסר אימות מנהל תקין" }, { status: 401 });
-    }
-
-    const [username, password] = adminToken.split(':');
-    const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
-    if (!admin) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
     try {
-        const { results } = await env.DB.prepare("SELECT phone, email, password, can_upload, can_record FROM users").all();
-        
-        const usersWithFullDetails = await Promise.all(results.map(async (u) => {
-            const name = await getNameFromIni(u.phone, env.YEMOT_TOKEN);
-            const phoneStatus = await checkPhoneStatus(u.phone, env.YEMOT_TOKEN);
-            return {
-                phone: u.phone,
-                email: u.email,
-                password: u.password,
-                name: name || "לא נמצא שם בימות",
-                connectedToTzintukim: phoneStatus.active,
-                canUpload: !!u.can_upload,
-                canRecord: u.can_record !== 0
-            };
-        }));
+        // שליפת הנתונים במקביל לחיסכון בזמן
+        const [dbUsersRes, yemotUsers, namesMap] = await Promise.all([
+            env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at FROM users").all(),
+            getAllYemotUsers(env.YEMOT_TOKEN),
+            getAllNamesFromIni(env.YEMOT_TOKEN)
+        ]);
 
-        return Response.json({ success: true, users: usersWithFullDetails });
+        const dbUsersMap = {};
+        dbUsersRes.results.forEach(u => dbUsersMap[u.phone] = u);
+
+        const mergedUsers = [];
+        const processedPhones = new Set();
+
+        // מעבר על כל המשתמשים שקיימים בימות המשיח (רשימת תפוצה)
+        for (const yu of yemotUsers) {
+            const phone = yu.phone;
+            processedPhones.add(phone);
+            const dbUser = dbUsersMap[phone];
+            
+            mergedUsers.push({
+                phone: phone,
+                name: namesMap[phone] || "לא הוגדר (בימות)",
+                hasWebAccount: !!dbUser,
+                yemotActive: yu.active,
+                email: dbUser ? dbUser.email : null,
+                canUpload: dbUser ? !!dbUser.can_upload : false,
+                canRecord: dbUser ? dbUser.can_record !== 0 : false,
+                canTzintuk: dbUser ? dbUser.can_tzintuk !== 0 : false,
+                createdAt: dbUser ? dbUser.created_at : null
+            });
+        }
+
+        // השלמת משתמשים שרשומים באתר אבל נמחקו או לא קיימים בימות המשיח משום מה
+        for (const du of dbUsersRes.results) {
+            if (!processedPhones.has(du.phone)) {
+                mergedUsers.push({
+                    phone: du.phone,
+                    name: namesMap[du.phone] || "משתמש חסר בימות",
+                    hasWebAccount: true,
+                    yemotActive: false, // לא בימות
+                    email: du.email,
+                    canUpload: !!du.can_upload,
+                    canRecord: du.can_record !== 0,
+                    canTzintuk: du.can_tzintuk !== 0,
+                    createdAt: du.created_at
+                });
+            }
+        }
+
+        return Response.json({ success: true, users: mergedUsers });
     } catch (e) {
-        return Response.json({ error: "שגיאה בשליפת המשתמשים: " + e.message }, { status: 400 });
+        return Response.json({ error: "שגיאה בשליפת המשתמשים: " + e.message }, { status: 500 });
     }
 }
 
+// 2. צפייה בפרופיל מורחב ומלא של משתמש ספציפי
+export async function handleAdminGetUserFullProfile(request, env) {
+    const body = await request.json().catch(() => ({}));
+    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+
+    const phone = body.phone;
+    if (!phone) return Response.json({ error: "חובה לשלוח מספר טלפון" }, { status: 400 });
+
+    try {
+        const userDb = await env.DB.prepare("SELECT * FROM users WHERE phone = ?").bind(phone).first();
+        const tokens = await env.DB.prepare("SELECT id, token_type, created_at, expires_at, last_used_at, session_email FROM user_tokens WHERE phone = ? ORDER BY last_used_at DESC").bind(phone).all();
+        const blocks = await env.DB.prepare("SELECT * FROM verification_blocks WHERE block_type = 'phone' AND block_value = ?").bind(phone).all();
+        
+        const yemotStatus = await checkPhoneStatus(phone, env.YEMOT_TOKEN);
+        const name = (await getAllNamesFromIni(env.YEMOT_TOKEN))[phone] || null;
+
+        return Response.json({
+            success: true,
+            profile: {
+                user: userDb || null,
+                yemot: { exists: yemotStatus.exists, active: yemotStatus.active, name: name },
+                activeSessions: tokens.results,
+                blocks: blocks.results
+            }
+        });
+    } catch (e) {
+        return Response.json({ error: "שגיאה בשליפת נתוני הפרופיל: " + e.message }, { status: 500 });
+    }
+}
+
+// 3. עדכון נתוני משתמש והרשאותיו
 export async function handleAdminUpdateUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    const { adminToken, phone, newEmail, newPassword, canUpload, canRecord } = body;
+    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
-    if (!adminToken || !adminToken.includes(':')) {
-        return Response.json({ error: "חסר אימות מנהל תקין" }, { status: 401 });
-    }
-
-    const [username, adminPass] = adminToken.split(':');
-    const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
-    if (!admin) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
-
-    if (!phone) {
-        return Response.json({ error: "חובה לציין מספר טלפון של המשתמש לעדכון" }, { status: 400 });
-    }
+    const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly } = body;
+    if (!phone) return Response.json({ error: "חובה לציין מספר טלפון של המשתמש לעדכון" }, { status: 400 });
 
     try {
         const user = await env.DB.prepare("SELECT * FROM users WHERE phone = ?").bind(phone).first();
-        if (!user) {
-            return Response.json({ error: "המשתמש שביקשת לעדכן לא נמצא" }, { status: 404 });
-        }
+        if (!user) return Response.json({ error: "המשתמש שביקשת לעדכן לא נמצא במסד הנתונים של האתר" }, { status: 404 });
 
         const finalPassword = newPassword || user.password;
-        // המרה של האימייל החדש לאותיות קטנות (אם הוזן)
         const finalEmail = newEmail === undefined ? user.email : (newEmail ? String(newEmail).toLowerCase() : null); 
         
-        const finalCanUpload = canUpload === undefined ? user.can_upload : (canUpload ? 1 : 0);
-        const finalCanRecord = canRecord === undefined ? user.can_record : (canRecord ? 1 : 0);
+        const f_upload = canUpload === undefined ? user.can_upload : (canUpload ? 1 : 0);
+        const f_record = canRecord === undefined ? user.can_record : (canRecord ? 1 : 0);
+        const f_tzintuk = canTzintuk === undefined ? (user.can_tzintuk ?? 1) : (canTzintuk ? 1 : 0);
+        const f_receive = receiveEmails === undefined ? (user.receive_emails ?? 1) : (receiveEmails ? 1 : 0);
+        const f_googleOnly = googleLoginOnly === undefined ? (user.google_login_only ?? 0) : (googleLoginOnly ? 1 : 0);
 
-        await env.DB.prepare("UPDATE users SET email = ?, password = ?, can_upload = ?, can_record = ? WHERE phone = ?")
-            .bind(finalEmail, finalPassword, finalCanUpload, finalCanRecord, phone).run();
+        await env.DB.prepare(
+            `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=? WHERE phone=?`
+        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, phone).run();
 
-        return Response.json({ success: true, message: "נתוני המשתמש והרשאותיו עודכנו בהצלחה על ידי המנהל" });
+        return Response.json({ success: true, message: "נתוני המשתמש והרשאותיו עודכנו בהצלחה" });
     } catch (e) {
-        return Response.json({ error: "שגיאה בעדכון המשתמש: " + e.message }, { status: 400 });
+        return Response.json({ error: "שגיאה בעדכון המשתמש: " + e.message }, { status: 500 });
+    }
+}
+
+// 4. ניתוק מכשירים (מחיקת טוקנים)
+export async function handleAdminDisconnectUserTokens(request, env) {
+    const body = await request.json().catch(() => ({}));
+    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+
+    const { phone, tokenId } = body;
+    if (!phone) return Response.json({ error: "חובה לציין מספר טלפון" }, { status: 400 });
+
+    try {
+        if (tokenId) {
+            // ניתוק חיבור ספציפי (Session)
+            await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ? AND id = ?").bind(phone, tokenId).run();
+            return Response.json({ success: true, message: "החיבור נותק בהצלחה" });
+        } else {
+            // ניתוק כל החיבורים של המשתמש מכל המכשירים
+            await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(phone).run();
+            return Response.json({ success: true, message: "המשתמש נותק מכל המכשירים המחוברים" });
+        }
+    } catch (e) {
+        return Response.json({ error: "שגיאה בניתוק המשתמש: " + e.message }, { status: 500 });
     }
 }
