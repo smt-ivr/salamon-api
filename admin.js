@@ -33,7 +33,6 @@ export async function handleAdminGetUsers(request, env) {
     if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
     try {
-        // שליפת הנתונים במקביל לחיסכון בזמן
         const [dbUsersRes, yemotUsers, namesMap] = await Promise.all([
             env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at FROM users").all(),
             getAllYemotUsers(env.YEMOT_TOKEN),
@@ -46,7 +45,6 @@ export async function handleAdminGetUsers(request, env) {
         const mergedUsers = [];
         const processedPhones = new Set();
 
-        // מעבר על כל המשתמשים שקיימים בימות המשיח (רשימת תפוצה)
         for (const yu of yemotUsers) {
             const phone = yu.phone;
             processedPhones.add(phone);
@@ -65,14 +63,13 @@ export async function handleAdminGetUsers(request, env) {
             });
         }
 
-        // השלמת משתמשים שרשומים באתר אבל נמחקו או לא קיימים בימות המשיח משום מה
         for (const du of dbUsersRes.results) {
             if (!processedPhones.has(du.phone)) {
                 mergedUsers.push({
                     phone: du.phone,
                     name: namesMap[du.phone] || "משתמש חסר בימות",
                     hasWebAccount: true,
-                    yemotActive: false, // לא בימות
+                    yemotActive: false,
                     email: du.email,
                     canUpload: !!du.can_upload,
                     canRecord: du.can_record !== 0,
@@ -159,15 +156,39 @@ export async function handleAdminDisconnectUserTokens(request, env) {
 
     try {
         if (tokenId) {
-            // ניתוק חיבור ספציפי (Session)
             await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ? AND id = ?").bind(phone, tokenId).run();
             return Response.json({ success: true, message: "החיבור נותק בהצלחה" });
         } else {
-            // ניתוק כל החיבורים של המשתמש מכל המכשירים
             await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(phone).run();
             return Response.json({ success: true, message: "המשתמש נותק מכל המכשירים המחוברים" });
         }
     } catch (e) {
         return Response.json({ error: "שגיאה בניתוק המשתמש: " + e.message }, { status: 500 });
+    }
+}
+
+// 5. פתיחת חשבון חדש באופן יזום על ידי מנהל (ללא אימות צינתוק)
+export async function handleAdminCreateUser(request, env) {
+    const body = await request.json().catch(() => ({}));
+    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+
+    const { phone, password } = body;
+    if (!phone || !password) return Response.json({ error: "חובה לציין מספר טלפון וסיסמה" }, { status: 400 });
+
+    try {
+        const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
+        if (existingUser) {
+            return Response.json({ error: "למשתמש זה כבר קיים חשבון באתר" }, { status: 400 });
+        }
+
+        const nowIsraelStr = getIsraelTimeForDB();
+        await env.DB.prepare(
+            `INSERT INTO users (phone, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, created_at) 
+             VALUES (?, ?, 1, 0, 1, 1, 0, ?)`
+        ).bind(phone, password, nowIsraelStr).run();
+
+        return Response.json({ success: true, message: "החשבון נוצר בהצלחה!" });
+    } catch (e) {
+        return Response.json({ error: "שגיאה ביצירת החשבון: " + e.message }, { status: 500 });
     }
 }
