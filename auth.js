@@ -283,6 +283,18 @@ export async function handleUpdateProfile(request, env) {
         const finalReceive = receiveEmails === undefined ? (user.receive_emails ?? 1) : (receiveEmails ? 1 : 0);
         const finalGoogleOnly = googleLoginOnly === undefined ? (user.google_login_only ?? 0) : (googleLoginOnly ? 1 : 0);
 
+        // הגבלה 1: לא ניתן להפעיל "כניסה באמצעות גוגל בלבד" אם ההתחברות הנוכחית היא באמצעות סיסמה
+        if (googleLoginOnly === true && user.auth_method === 'password') {
+            return Response.json({ error: "לא ניתן להפעיל כניסה באמצעות גוגל בלבד כאשר מחוברים עם סיסמה. אנא התחברו דרך חשבון גוגל כדי להפעיל הגדרה זו." }, { status: 403 });
+        }
+
+        // הגבלה 2: לא ניתן לשנות מייל אם מופעל "כניסה באמצעות גוגל בלבד" מבלי לכבות את ההגדרה
+        if (finalEmail !== user.email) {
+            if (user.google_login_only === 1 && finalGoogleOnly === 1) {
+                return Response.json({ error: "לא ניתן לשנות כתובת אימייל כאשר ההגדרה 'כניסה באמצעות גוגל בלבד' מופעלת. עליך לכבות את ההגדרה תחילה או יחד עם שינוי המייל." }, { status: 403 });
+            }
+        }
+
         await env.DB.prepare(
             "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
         ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
