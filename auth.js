@@ -38,6 +38,8 @@ export async function authenticateUser(db, userToken) {
     if (user) {
         user.token_type = isTemp ? 'temporary' : 'permanent';
         user.auth_method = authMethod;
+        // שולפים את האימייל השמור ב-Session (אם קיים)
+        user.session_email = session.session_email; 
     }
     
     return user;
@@ -189,10 +191,11 @@ export async function handleLogin(request, env) {
         ).bind(user.phone, user.phone).run();
     }
 
+    // הוספת session_email כ-null מאחר וזו כניסה עם סיסמה
     await env.DB.prepare(
-        `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at) 
-         VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr).run();
+        `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at, session_email) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr, null).run();
 
     return Response.json({ success: true, message: "התחברת בהצלחה", token: sessionToken });
 }
@@ -238,7 +241,7 @@ export async function handleLogout(request, env) {
     } catch (error) { return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 }); }
 }
 
-// 6. עדכון פרופיל (עם מנגנון אבטחה כפול והודעות מפורטות)
+// 6. עדכון פרופיל (עם מנגנון השוואה חכם מול ה-Session)
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
@@ -260,7 +263,6 @@ export async function handleUpdateProfile(request, env) {
     let messages = [];
     let errors = [];
 
-    // עדכון קבלת התראות - עם הודעה מפורטת
     if (receiveEmails !== undefined) {
         const requestedReceive = receiveEmails ? 1 : 0;
         if (requestedReceive !== finalReceive) {
@@ -273,7 +275,6 @@ export async function handleUpdateProfile(request, env) {
         }
     }
 
-    // הגדרת כניסה מגוגל בלבד (עם לוגיקת האבטחה שתיקנו)
     if (googleLoginOnly !== undefined) {
         const requestedGoogleOnly = googleLoginOnly ? 1 : 0;
         if (requestedGoogleOnly !== finalGoogleOnly) {
@@ -285,8 +286,9 @@ export async function handleUpdateProfile(request, env) {
                     errors.push("כדי להפעיל כניסה מגוגל בלבד, עליך להיות מחובר כעת באמצעות חשבון הגוגל שלך.");
                 } else if (!targetEmail) {
                     errors.push("לא ניתן להפעיל כניסה מגוגל בלבד ללא כתובת אימייל מעודכנת.");
-                } else if (targetEmail !== user.email) {
-                    errors.push("לא ניתן לנעול כניסה על כתובת מייל חדשה שטרם אומתה. יש לשמור את המייל החדש, להתחבר איתו דרך גוגל, ורק אז להפעיל את הנעילה.");
+                } else if (targetEmail !== user.session_email) {
+                    // הלוגיקה החדשה: בודקים מול ה-Session ולא מול מה שהיה כתוב במסד!
+                    errors.push(`האימייל (${targetEmail}) אינו תואם לחשבון הגוגל שאיתו אתה מחובר כעת. לא ניתן לנעול את המערכת על אימייל זה.`);
                 } else {
                     finalGoogleOnly = requestedGoogleOnly;
                     messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' הופעלה בהצלחה.");
@@ -298,7 +300,6 @@ export async function handleUpdateProfile(request, env) {
         }
     }
 
-    // עדכון כתובת אימייל (עם הודעה המפרטת את הכתובת החדשה)
     if (newEmail !== undefined) {
         const requestedEmail = newEmail || null;
         if (requestedEmail !== user.email) {
@@ -456,10 +457,11 @@ export async function handleGoogleLogin(request, env) {
                )`
         ).bind(user.phone, user.phone).run();
 
+        // הוספת שמירת המייל הספציפי שהגיע מגוגל לתוך ה-Session
         await env.DB.prepare(
-            `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at) 
-             VALUES (?, ?, ?, ?, ?, ?)`
-        ).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr).run();
+            `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at, session_email) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr, email).run();
 
         return Response.json({ success: true, message: "התחברת בהצלחה באמצעות גוגל", token: sessionToken });
     } catch (err) {
