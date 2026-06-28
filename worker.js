@@ -16,7 +16,9 @@ import {
 import {
     handleAdminLogin,
     handleAdminGetUsers,
-    handleAdminUpdateUser
+    handleAdminUpdateUser,
+    handleAdminGetUserFullProfile,       
+    handleAdminDisconnectUserTokens      
 } from './admin.js';
 
 import { VerificationSystem } from './verification.js';
@@ -67,7 +69,6 @@ export default {
             // API פתוח לימות המשיח (ללא אימות טוקן)
             // ============================================
             if (pathname.endsWith("/api/phone/stats")) {
-                // תמיכה ב-GET ו-POST לטובת שלוחת API
                 response = await handlePhoneApiStats(request, env);
             }
             
@@ -244,8 +245,14 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/users")) {
                 response = await handleAdminGetUsers(request, env);
             }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/user-profile")) {
+                response = await handleAdminGetUserFullProfile(request, env);
+            }
             else if (request.method === "POST" && pathname.endsWith("/api/admin/update-user")) {
                 response = await handleAdminUpdateUser(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/user-tokens/delete")) {
+                response = await handleAdminDisconnectUserTokens(request, env);
             }
             else {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
