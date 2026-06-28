@@ -54,7 +54,9 @@ export async function handleCheckIdentifier(request, env) {
         return Response.json({ error: "אנא הזינו מספר טלפון או כתובת אימייל" }, { status: 400 });
     }
 
-    const existingUser = await env.DB.prepare("SELECT phone FROM users WHERE phone = ? OR email = ?").bind(identifier, identifier).first();
+    const searchIdentifier = String(identifier).toLowerCase();
+
+    const existingUser = await env.DB.prepare("SELECT phone FROM users WHERE phone = ? OR email = ?").bind(searchIdentifier, searchIdentifier).first();
     
     if (existingUser) {
         return Response.json({
@@ -64,7 +66,7 @@ export async function handleCheckIdentifier(request, env) {
         });
     }
 
-    if (identifier.includes('@')) {
+    if (searchIdentifier.includes('@')) {
         return Response.json({
             isRegistered: false,
             authorized: false,
@@ -73,7 +75,7 @@ export async function handleCheckIdentifier(request, env) {
     }
 
     const token = env.YEMOT_TOKEN;
-    const phoneStatus = await checkPhoneStatus(identifier, token);
+    const phoneStatus = await checkPhoneStatus(searchIdentifier, token);
     
     if (!phoneStatus.exists) {
         return Response.json({ 
@@ -83,12 +85,12 @@ export async function handleCheckIdentifier(request, env) {
         }, { status: 403 });
     }
 
-    const name = await getNameFromIni(identifier, token);
+    const name = await getNameFromIni(searchIdentifier, token);
 
     return Response.json({
         isRegistered: false,
         authorized: true,
-        phone: identifier,
+        phone: searchIdentifier,
         name: name,
         message: "המשתמש מורשה וטרם נרשם. מועבר להרשמה."
     });
@@ -132,7 +134,7 @@ export async function handleRegister(request, env) {
     }
 
     try {
-        const safeEmail = email || null;
+        const safeEmail = email ? String(email).toLowerCase() : null;
         const nowIsraelStr = getIsraelTimeForDB();
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password, can_record, can_upload, receive_emails, google_login_only, created_at) 
@@ -156,9 +158,11 @@ export async function handleLogin(request, env) {
         return Response.json({ error: "חובה להזין מזהה (טלפון/אימייל) וסיסמה" }, { status: 400 });
     }
 
+    const searchIdentifier = String(identifier).toLowerCase();
+
     const user = await env.DB.prepare(
         `SELECT * FROM users WHERE (phone = ? OR email = ?) AND password = ?`
-    ).bind(identifier, identifier, password).first();
+    ).bind(searchIdentifier, searchIdentifier, password).first();
 
     if (!user) {
         return Response.json({ error: "שם משתמש או סיסמה שגויים" }, { status: 401 });
@@ -263,11 +267,12 @@ export async function handleUpdateProfile(request, env) {
     let errors = [];
 
     // --- שלב 1: איסוף כוונות המשתמש (מה הוא מנסה לעשות) ---
-    const intentEmail = newEmail !== undefined ? (newEmail || null) : user.email;
+    const currentEmail = user.email ? String(user.email).toLowerCase() : null;
+    const intentEmail = newEmail !== undefined ? (newEmail ? String(newEmail).toLowerCase() : null) : currentEmail;
     const intentGoogleOnly = googleLoginOnly !== undefined ? (googleLoginOnly ? 1 : 0) : finalGoogleOnly;
     const intentReceive = receiveEmails !== undefined ? (receiveEmails ? 1 : 0) : finalReceive;
 
-    const wantsToChangeEmail = intentEmail !== user.email;
+    const wantsToChangeEmail = intentEmail !== currentEmail;
     const wantsToChangeGoogleOnly = intentGoogleOnly !== finalGoogleOnly;
     const wantsToChangeReceive = intentReceive !== finalReceive;
 
@@ -281,22 +286,25 @@ export async function handleUpdateProfile(request, env) {
             errors.push("כדי להשתמש ב'כניסה מגוגל בלבד', עליך להיות מחובר כעת באמצעות חשבון גוגל.");
         } else if (!intentEmail) {
             errors.push("לא ניתן להפעיל כניסה מגוגל בלבד ללא כתובת אימייל מעודכנת.");
-        } else if (intentEmail !== user.session_email) {
-            // המייל חייב להיות זהה במדויק למה שמאומת ב-Session
-            if (finalGoogleOnly === 1 && !wantsToChangeGoogleOnly) {
-                 errors.push("לא ניתן לעדכן כתובת אימייל בזמן שנעילת גוגל מופעלת. אנא כבה את הנעילה קודם.");
-            } else {
-                 errors.push(`האימייל המבוקש (${intentEmail}) אינו תואם לזה שאיתו התחברת הרגע (${user.session_email}).`);
-            }
         } else {
-            // הכל תקין, הבקשה עברה את כל החסימות!
-            if (wantsToChangeGoogleOnly) {
-                finalGoogleOnly = 1;
-                messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' הופעלה בהצלחה.");
-            }
-            if (wantsToChangeEmail) {
-                finalEmail = intentEmail;
-                messages.push(`כתובת האימייל עודכנה לכתובת: ${finalEmail}`);
+            const sessionEmailLower = user.session_email ? String(user.session_email).toLowerCase() : null;
+            if (intentEmail !== sessionEmailLower) {
+                // המייל חייב להיות זהה במדויק למה שמאומת ב-Session
+                if (finalGoogleOnly === 1 && !wantsToChangeGoogleOnly) {
+                     errors.push("לא ניתן לעדכן כתובת אימייל בזמן שנעילת גוגל מופעלת. אנא כבה את הנעילה קודם.");
+                } else {
+                     errors.push(`האימייל המבוקש (${intentEmail}) אינו תואם לזה שאיתו התחברת הרגע (${user.session_email}).`);
+                }
+            } else {
+                // הכל תקין, הבקשה עברה את כל החסימות!
+                if (wantsToChangeGoogleOnly) {
+                    finalGoogleOnly = 1;
+                    messages.push("הגדרת 'כניסה באמצעות גוגל בלבד' הופעלה בהצלחה.");
+                }
+                if (wantsToChangeEmail) {
+                    finalEmail = intentEmail;
+                    messages.push(`כתובת האימייל עודכנה לכתובת: ${finalEmail}`);
+                }
             }
         }
     } else {
@@ -444,7 +452,7 @@ export async function handleGoogleLogin(request, env) {
         if (!googleRes.ok || !googleData.email) return Response.json({ error: "אימות מול שרתי גוגל נכשל" }, { status: 401 });
         if (googleData.aud !== "89500817024-tbvsuu4dci6bqh173l65ua9lc65pe24p.apps.googleusercontent.com") return Response.json({ error: "בקשה חסומה: מזהה אפליקציה לא תואם" }, { status: 403 });
 
-        const email = googleData.email;
+        const email = String(googleData.email).toLowerCase();
         const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
 
         if (!user) return Response.json({ error: `כתובת האימייל (${email}) אינה משויכת לאף חשבון במערכת.` }, { status: 404 });
