@@ -1,6 +1,7 @@
 // auth.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
+import { sendSecurityAlert } from './emailService.js';
 
 // פונקציית עזר גלובלית לאימות משתמש - מזהה גם את מקור ההתחברות
 export async function authenticateUser(db, userToken) {
@@ -34,7 +35,6 @@ export async function authenticateUser(db, userToken) {
 
     const user = await db.prepare("SELECT * FROM users WHERE phone = ?").bind(session.phone).first();
     
-    // הזרקת המידע על הטוקן אל תוך אובייקט המשתמש לצורך שימוש בפונקציות הבאות
     if (user) {
         user.token_type = isTemp ? 'temporary' : 'permanent';
         user.auth_method = authMethod;
@@ -139,16 +139,13 @@ export async function handleRegister(request, env) {
 
         await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
         
-        return Response.json({ 
-            success: true, 
-            message: "נרשמת בהצלחה"
-        });
+        return Response.json({ success: true, message: "נרשמת בהצלחה" });
     } catch (e) {
         return Response.json({ error: "שגיאת רישום. ייתכן והאימייל כבר תפוס." }, { status: 400 });
     }
 }
 
-// 3. התחברות (מחזיר טוקן בלבד) - עודכן לתמוך ב-2 קבועים ו-1 זמני
+// 3. התחברות
 export async function handleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { identifier, password, rememberMe } = body;
@@ -175,26 +172,19 @@ export async function handleLogin(request, env) {
     
     let expiresAtStr = null;
 
-    // ניהול מחיקת טוקנים בהתאם לסוג ההתחברות (מפריד זמני מקבוע)
     if (!rememberMe) {
         expiresAtStr = getFutureIsraelTimeForDB(30);
-        // מוחק את כל הטוקנים הזמניים כך שיישאר רק 1 בסוף (החדש שנוצר)
         await env.DB.prepare(
-            `DELETE FROM user_tokens 
-             WHERE phone = ? 
-               AND token_type IN ('password_temp', 'temporary')`
+            `DELETE FROM user_tokens WHERE phone = ? AND token_type IN ('password_temp', 'temporary')`
         ).bind(user.phone).run();
     } else {
-        // מוחק טוקנים קבועים אבל שומר את ה-1 הכי חדש, כך שביחד עם החדש שנוצר עכשיו יהיו מקסימום 2
         await env.DB.prepare(
             `DELETE FROM user_tokens 
-             WHERE phone = ? 
-               AND token_type IN ('password_perm', 'google_perm')
+             WHERE phone = ? AND token_type IN ('password_perm', 'google_perm')
                AND id NOT IN (
                    SELECT id FROM user_tokens 
                    WHERE phone = ? AND token_type IN ('password_perm', 'google_perm')
-                   ORDER BY created_at DESC 
-                   LIMIT 1
+                   ORDER BY created_at DESC LIMIT 1
                )`
         ).bind(user.phone, user.phone).run();
     }
@@ -204,11 +194,7 @@ export async function handleLogin(request, env) {
          VALUES (?, ?, ?, ?, ?, ?)`
     ).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr).run();
 
-    return Response.json({
-        success: true,
-        message: "התחברת בהצלחה",
-        token: sessionToken
-    });
+    return Response.json({ success: true, message: "התחברת בהצלחה", token: sessionToken });
 }
 
 // 4. שליפת פרופיל משתמש
@@ -216,15 +202,10 @@ export async function handleGetProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken } = body;
 
-    if (!userToken) {
-        return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
-    }
+    if (!userToken) return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
 
     const user = await authenticateUser(env.DB, userToken);
-    
-    if (!user) {
-        return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
-    }
+    if (!user) return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
 
     const name = await getNameFromIni(user.phone, env.YEMOT_TOKEN);
     const phoneStatus = await checkPhoneStatus(user.phone, env.YEMOT_TOKEN);
@@ -250,43 +231,28 @@ export async function handleGetProfile(request, env) {
 export async function handleLogout(request, env) {
     try {
         const body = await request.json().catch(() => ({}));
-        const userToken = body.userToken;
-        
-        if (userToken) {
-            await env.DB.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
+        if (body.userToken) {
+            await env.DB.prepare("DELETE FROM user_tokens WHERE id = ?").bind(body.userToken).run();
         }
         return Response.json({ success: true, message: "התנתקת מהמערכת בהצלחה" });
-    } catch (error) {
-        return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 });
-    }
+    } catch (error) { return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 }); }
 }
 
-// 6. עדכון פרופיל (מאפשר עדכון חלקי של שדות גם אם שדות אחרים נחסמו)
+// 6. עדכון פרופיל (שולח התראת אבטחה במידה והופעל מצב גוגל בלבד)
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
 
-    if (!userToken) {
-        return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
-    }
+    if (!userToken) return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
 
     const user = await authenticateUser(env.DB, userToken);
-    
-    if (!user) {
-        return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
-    }
+    if (!user) return Response.json({ error: "הטוקן שגוי או שפג תוקפו" }, { status: 401 });
 
-    // אימות סיסמה קריטי לכל פעולה (אם התחבר דרך סיסמה)
     if (user.auth_method === 'password') {
-        if (!password) {
-            return Response.json({ error: "חובה להזין את הסיסמה שלך על מנת לשמור שינויים." }, { status: 400 });
-        }
-        if (user.password !== password) {
-            return Response.json({ error: "הסיסמה שהוזנה שגויה, לא ניתן לשמור שינויים." }, { status: 401 });
-        }
+        if (!password) return Response.json({ error: "חובה להזין את הסיסמה שלך על מנת לשמור שינויים." }, { status: 400 });
+        if (user.password !== password) return Response.json({ error: "הסיסמה שהוזנה שגויה, לא ניתן לשמור שינויים." }, { status: 401 });
     }
 
-    // משתנים לשמירת הערכים הסופיים שייכנסו למסד הנתונים
     let finalEmail = user.email;
     let finalReceive = user.receive_emails ?? 1;
     let finalGoogleOnly = user.google_login_only ?? 0;
@@ -294,7 +260,6 @@ export async function handleUpdateProfile(request, env) {
     let messages = [];
     let errors = [];
 
-    // בדיקה והשמה חכמה עבור 'קבלת מיילים'
     if (receiveEmails !== undefined) {
         const requestedReceive = receiveEmails ? 1 : 0;
         if (requestedReceive !== finalReceive) {
@@ -303,7 +268,6 @@ export async function handleUpdateProfile(request, env) {
         }
     }
 
-    // בדיקה והשמה חכמה עבור 'כניסה מגוגל בלבד'
     if (googleLoginOnly !== undefined) {
         const requestedGoogleOnly = googleLoginOnly ? 1 : 0;
         if (requestedGoogleOnly !== finalGoogleOnly) {
@@ -316,13 +280,11 @@ export async function handleUpdateProfile(request, env) {
         }
     }
 
-    // בדיקה והשמה חכמה עבור 'עדכון אימייל'
     if (newEmail !== undefined) {
         const requestedEmail = newEmail || null;
         if (requestedEmail !== user.email) {
-            // משתמש בערך הסופי של גוגל-בלבד (finalGoogleOnly) כי אולי הוא ביקש לשנות את זה באותה בקשה
             if (user.google_login_only === 1 && finalGoogleOnly === 1) {
-                errors.push("לא ניתן לשנות כתובת אימייל כאשר ההגדרה 'כניסה מגוגל בלבד' מופעלת. (עדכון המייל נדחה)");
+                errors.push("לא ניתן לשנות אימייל כש'כניסה מגוגל בלבד' מופעלת. (עדכון המייל נדחה)");
             } else {
                 finalEmail = requestedEmail;
                 messages.push("כתובת האימייל עודכנה.");
@@ -330,79 +292,64 @@ export async function handleUpdateProfile(request, env) {
         }
     }
 
-    // אם לא התבצע שום ניסיון לשינוי
     if (messages.length === 0 && errors.length === 0) {
         return Response.json({ success: true, message: "לא נשלחו נתונים חדשים לעדכון." });
     }
 
     try {
-        // מעדכנים את מסד הנתונים עם כל מה שאושר (או הושאר כמו קודם)
         await env.DB.prepare(
             "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
         ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
 
-        const isSuccess = messages.length > 0;
-        const hasErrors = errors.length > 0;
-
-        let finalMessage = "";
-        
-        if (isSuccess && hasErrors) {
-            finalMessage = "בוצע עדכון חלקי:\n" + messages.join("\n") + "\n\nשגיאות:\n" + errors.join("\n");
-        } else if (isSuccess && !hasErrors) {
-            finalMessage = "כל השינויים נשמרו בהצלחה:\n" + messages.join("\n");
-        } else if (!isSuccess && hasErrors) {
-            finalMessage = "העדכון נכשל לחלוטין:\n" + errors.join("\n");
-            // אם הכל נכשל, נחזיר שגיאת לקוח (HTTP 400) במקום סטטוס 200
-            return Response.json({ error: finalMessage }, { status: 400 });
+        // במידה ומצב 'גוגל בלבד' הופעל לראשונה כעת -> שולחים התראה למייל המעודכן!
+        if (finalGoogleOnly === 1 && user.google_login_only === 0 && finalEmail) {
+            const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
+            const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
+            // שליחה ללא עיכוב הלקוח (Promise שרץ ברקע)
+            sendSecurityAlert(env, finalEmail, userName, 'google_only', userIp, null).catch(e => console.error(e));
         }
 
-        return Response.json({ 
-            success: true, 
-            message: finalMessage,
-            partialUpdate: isSuccess && hasErrors // סימון לצד לקוח שהיה עדכון חלקי
-        });
+        const isSuccess = messages.length > 0;
+        const hasErrors = errors.length > 0;
+        let finalMessage = "";
+        
+        if (isSuccess && hasErrors) finalMessage = "בוצע עדכון חלקי:\n" + messages.join("\n") + "\n\nשגיאות:\n" + errors.join("\n");
+        else if (isSuccess && !hasErrors) finalMessage = "כל השינויים נשמרו בהצלחה:\n" + messages.join("\n");
+        else if (!isSuccess && hasErrors) return Response.json({ error: "העדכון נכשל לחלוטין:\n" + errors.join("\n") }, { status: 400 });
 
+        return Response.json({ success: true, message: finalMessage, partialUpdate: isSuccess && hasErrors });
     } catch (e) {
-        return Response.json({ error: "שגיאה במסד הנתונים בעת השמירה. ייתכן וכתובת האימייל כבר תפוסה על ידי חשבון אחר." }, { status: 400 });
+        return Response.json({ error: "שגיאה במסד הנתונים בעת השמירה. ייתכן והאימייל תפוס." }, { status: 400 });
     }
 }
 
-// 7. שינוי סיסמה
+// 7. שינוי סיסמה (מוציא התראה למייל על שינוי)
 export async function handleChangePassword(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, oldPassword, newPassword, newPasswordConfirm, logoutAllDevices } = body;
 
-    if (!userToken) {
-        return Response.json({ error: "חסר אימות משתמש (טוקן)" }, { status: 401 });
-    }
+    if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
 
     const user = await authenticateUser(env.DB, userToken);
-    if (!user) {
-        return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
-    }
-
-    if (!oldPassword || !newPassword || !newPasswordConfirm) {
-        return Response.json({ error: "חובה להזין סיסמה נוכחית ואת הסיסמה החדשה פעמיים" }, { status: 400 });
-    }
-
-    if (user.password !== oldPassword) {
-        return Response.json({ error: "הסיסמה הנוכחית שהוזנה שגויה" }, { status: 401 });
-    }
-
-    if (newPassword !== newPasswordConfirm) {
-        return Response.json({ error: "הסיסמאות החדשות אינן תואמות" }, { status: 400 });
-    }
-
-    if (!/^\d{4,10}$/.test(newPassword)) {
-        return Response.json({ error: "הסיסמה החדשה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
-    }
+    if (!user) return Response.json({ error: "הטוקן שגוי או פג תוקף" }, { status: 401 });
+    if (!oldPassword || !newPassword || !newPasswordConfirm) return Response.json({ error: "חובה להזין את כל השדות" }, { status: 400 });
+    if (user.password !== oldPassword) return Response.json({ error: "הסיסמה הנוכחית שהוזנה שגויה" }, { status: 401 });
+    if (newPassword !== newPasswordConfirm) return Response.json({ error: "הסיסמאות החדשות אינן תואמות" }, { status: 400 });
+    if (!/^\d{4,10}$/.test(newPassword)) return Response.json({ error: "הסיסמה החדשה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
 
     try {
         await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?").bind(newPassword, user.phone).run();
 
+        // שליחת התראת אבטחה למייל בגין שינוי הסיסמה
+        if (user.email && user.receive_emails !== 0) {
+            const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
+            const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
+            sendSecurityAlert(env, user.email, userName, 'password_change', userIp, user.auth_method).catch(e => console.error(e));
+        }
+
         if (logoutAllDevices) {
             await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(user.phone).run();
-            return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה וכל המכשירים נותקו. אנא התחברו מחדש למערכת." });
+            return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה וכל המכשירים נותקו. התחברו מחדש למערכת." });
         } else {
             return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה" });
         }
@@ -411,33 +358,34 @@ export async function handleChangePassword(request, env) {
     }
 }
 
-// 8. איפוס סיסמה
+// 8. איפוס סיסמה (מוציא התראה למייל על האיפוס)
 export async function handleResetPasswordConfirm(request, env) {
     const body = await request.json().catch(() => ({}));
     const { phone, password, passwordConfirm, token } = body;
 
-    if (!phone || !password || !passwordConfirm || !token) {
-        return Response.json({ error: "חסרים פרטי חובה להשלמת איפוס הסיסמה." }, { status: 400 });
-    }
-    if (password !== passwordConfirm) {
-        return Response.json({ error: "הסיסמאות החדשות שהוזנו אינן תואמות." }, { status: 400 });
-    }
-    if (!/^\d{4,10}$/.test(password)) {
-        return Response.json({ error: "הסיסמה חייבת להכיל בין 4 ל-10 ספרות בלבד." }, { status: 400 });
-    }
+    if (!phone || !password || !passwordConfirm || !token) return Response.json({ error: "חסרים פרטי חובה" }, { status: 400 });
+    if (password !== passwordConfirm) return Response.json({ error: "הסיסמאות החדשות אינן תואמות." }, { status: 400 });
+    if (!/^\d{4,10}$/.test(password)) return Response.json({ error: "הסיסמה חייבת להכיל בין 4 ל-10 ספרות בלבד." }, { status: 400 });
 
     const session = await env.DB.prepare(
         `SELECT * FROM verification_sessions 
          WHERE auth_token = ? AND phone = ? AND status = 'verified' AND intent = 'reset'`
     ).bind(token, phone).first();
 
-    if (!session) {
-        return Response.json({ error: "אימות פג תוקף, שגוי או שכבר בוצע בו שימוש. אנא בצע איפוס מחדש." }, { status: 403 });
-    }
+    if (!session) return Response.json({ error: "אימות פג תוקף, שגוי או שכבר בוצע בו שימוש." }, { status: 403 });
 
     try {
+        const user = await env.DB.prepare("SELECT * FROM users WHERE phone = ?").bind(phone).first();
+        
         await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?").bind(password, phone).run();
         await env.DB.prepare("UPDATE verification_sessions SET status = 'used' WHERE id = ?").bind(session.id).run();
+
+        // שליחת התראת אבטחה בגין האיפוס החיצוני שהושלם
+        if (user && user.email && user.receive_emails !== 0) {
+            const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
+            const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
+            sendSecurityAlert(env, user.email, userName, 'password_reset', userIp, null).catch(e => console.error(e));
+        }
 
         return Response.json({ success: true, message: "הסיסמה שלך אופסה ועודכנה בהצלחה!" });
     } catch (e) {
@@ -445,52 +393,37 @@ export async function handleResetPasswordConfirm(request, env) {
     }
 }
 
-// 9. התחברות באמצעות גוגל (טוקן קבוע) - עודכן לתמוך ב-2 קבועים ו-1 זמני
+// 9. התחברות באמצעות גוגל (טוקן קבוע)
 export async function handleGoogleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { token } = body;
 
-    if (!token) {
-        return Response.json({ error: "טוקן אימות של גוגל חסר" }, { status: 400 });
-    }
+    if (!token) return Response.json({ error: "טוקן אימות של גוגל חסר" }, { status: 400 });
 
     try {
         const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
         const googleData = await googleRes.json();
 
-        if (!googleRes.ok || !googleData.email) {
-            return Response.json({ error: "אימות מול שרתי גוגל נכשל או שהמשתמש חסם גישה לאימייל" }, { status: 401 });
-        }
-
-        if (googleData.aud !== "89500817024-tbvsuu4dci6bqh173l65ua9lc65pe24p.apps.googleusercontent.com") {
-            return Response.json({ error: "בקשה חסומה: מזהה אפליקציה (Client ID) לא תואם" }, { status: 403 });
-        }
+        if (!googleRes.ok || !googleData.email) return Response.json({ error: "אימות מול שרתי גוגל נכשל" }, { status: 401 });
+        if (googleData.aud !== "89500817024-tbvsuu4dci6bqh173l65ua9lc65pe24p.apps.googleusercontent.com") return Response.json({ error: "בקשה חסומה: מזהה אפליקציה לא תואם" }, { status: 403 });
 
         const email = googleData.email;
         const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
 
-        if (!user) {
-            return Response.json({ 
-                error: `כתובת האימייל (${email}) אינה משויכת לאף חשבון במערכת. עלייך להירשם תחילה דרך מספר טלפון ולעדכן את האימייל בפרופיל.` 
-            }, { status: 404 });
-        }
+        if (!user) return Response.json({ error: `כתובת האימייל (${email}) אינה משויכת לאף חשבון במערכת.` }, { status: 404 });
 
         const sessionToken = crypto.randomUUID();
         const createdAtStr = getIsraelTimeForDB();
         const expiresAtStr = null; 
         const tokenType = 'google_perm';
 
-        // מחיקת טוקנים קבועים ישנים, נשאיר רק 1 (כך שעם החדש שנוצר עכשיו יהיו מקסימום 2)
-        // טוקנים זמניים של המשתמש כלל לא נמחקים פה.
         await env.DB.prepare(
             `DELETE FROM user_tokens 
-             WHERE phone = ? 
-               AND token_type IN ('password_perm', 'google_perm')
+             WHERE phone = ? AND token_type IN ('password_perm', 'google_perm')
                AND id NOT IN (
                    SELECT id FROM user_tokens 
                    WHERE phone = ? AND token_type IN ('password_perm', 'google_perm')
-                   ORDER BY created_at DESC 
-                   LIMIT 1
+                   ORDER BY created_at DESC LIMIT 1
                )`
         ).bind(user.phone, user.phone).run();
 
@@ -499,12 +432,7 @@ export async function handleGoogleLogin(request, env) {
              VALUES (?, ?, ?, ?, ?, ?)`
         ).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr).run();
 
-        return Response.json({
-            success: true,
-            message: "התחברת בהצלחה באמצעות גוגל",
-            token: sessionToken
-        });
-
+        return Response.json({ success: true, message: "התחברת בהצלחה באמצעות גוגל", token: sessionToken });
     } catch (err) {
         return Response.json({ error: "שגיאת תקשורת פנימית מול שרתי גוגל: " + err.message }, { status: 500 });
     }
