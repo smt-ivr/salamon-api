@@ -6,7 +6,11 @@ import { getIsraelTimeForDB } from './timeUtils.js';
 // 1. קבלת רשימת הקבצים + שליפת שם המקליט מתוך קובץ ה-TXT (עם תמיכה בטעינת קבצים נוספים)
 export async function handleGetMessages(request, env) {
     const body = await request.json();
-    const { userToken, filesLimit = 40, filesFrom = 0 } = body; 
+    // קבלת פרמטר page. אם לא צורף, ערך ברירת המחדל יהיה 1 (הדף הראשון)
+    const { userToken, filesLimit = 40, page = 1 } = body; 
+
+    // חישוב הדילוג (offset) על בסיס מספר הדף
+    const filesFrom = (page - 1) * filesLimit;
 
     const FOLDER_PATH = 'ivr2:/1/2'; 
 
@@ -17,7 +21,7 @@ export async function handleGetMessages(request, env) {
     if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
 
     const token = env.YEMOT_TOKEN;
-    // הוספת filesLimit ו-filesFrom ל-URL
+    // שליחת filesLimit ו-filesFrom (שחושב מהדף) ל-URL של ימות המשיח
     const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=${filesLimit}&filesFrom=${filesFrom}`;
     
     try {
