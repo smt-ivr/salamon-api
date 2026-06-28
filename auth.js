@@ -132,7 +132,6 @@ export async function handleRegister(request, env) {
     try {
         const safeEmail = email || null;
         const nowIsraelStr = getIsraelTimeForDB();
-        // הוספת ערכי ברירת מחדל לשדות החדשים בעת ההרשמה (מיילים מופעל, כניסה רק גוגל מכובה)
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password, can_record, can_upload, receive_emails, google_login_only, created_at) 
              VALUES (?, ?, ?, 1, 0, 1, 0, ?)`
@@ -149,7 +148,7 @@ export async function handleRegister(request, env) {
     }
 }
 
-// 3. התחברות (מחזיר טוקן בלבד)
+// 3. התחברות (מחזיר טוקן בלבד) - עודכן לתמוך ב-2 קבועים ו-1 זמני
 export async function handleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { identifier, password, rememberMe } = body;
@@ -171,25 +170,34 @@ export async function handleLogin(request, env) {
     }
 
     const sessionToken = crypto.randomUUID();
-    // סיווג סוג הטוקן גם לפי אמצעי ההתחברות (סיסמה)
     const tokenType = rememberMe ? 'password_perm' : 'password_temp';
     const createdAtStr = getIsraelTimeForDB();
     
     let expiresAtStr = null;
+
+    // ניהול מחיקת טוקנים בהתאם לסוג ההתחברות (מפריד זמני מקבוע)
     if (!rememberMe) {
         expiresAtStr = getFutureIsraelTimeForDB(30);
+        // מוחק את כל הטוקנים הזמניים כך שיישאר רק 1 בסוף (החדש שנוצר)
+        await env.DB.prepare(
+            `DELETE FROM user_tokens 
+             WHERE phone = ? 
+               AND token_type IN ('password_temp', 'temporary')`
+        ).bind(user.phone).run();
+    } else {
+        // מוחק טוקנים קבועים אבל שומר את ה-1 הכי חדש, כך שביחד עם החדש שנוצר עכשיו יהיו מקסימום 2
+        await env.DB.prepare(
+            `DELETE FROM user_tokens 
+             WHERE phone = ? 
+               AND token_type IN ('password_perm', 'google_perm')
+               AND id NOT IN (
+                   SELECT id FROM user_tokens 
+                   WHERE phone = ? AND token_type IN ('password_perm', 'google_perm')
+                   ORDER BY created_at DESC 
+                   LIMIT 1
+               )`
+        ).bind(user.phone, user.phone).run();
     }
-
-    await env.DB.prepare(
-        `DELETE FROM user_tokens 
-         WHERE phone = ? 
-           AND id NOT IN (
-               SELECT id FROM user_tokens 
-               WHERE phone = ? 
-               ORDER BY created_at DESC 
-               LIMIT 1
-           )`
-    ).bind(user.phone, user.phone).run();
 
     await env.DB.prepare(
         `INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at) 
@@ -203,7 +211,7 @@ export async function handleLogin(request, env) {
     });
 }
 
-// 4. שליפת פרופיל משתמש (מעודכן עם נתונים חדשים)
+// 4. שליפת פרופיל משתמש
 export async function handleGetProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken } = body;
@@ -230,7 +238,7 @@ export async function handleGetProfile(request, env) {
             connectedToTzintukim: phoneStatus.active,
             canUpload: !!user.can_upload,
             canRecord: user.can_record !== 0,
-            receiveEmails: user.receive_emails !== 0, // מופעל כברירת מחדל
+            receiveEmails: user.receive_emails !== 0,
             googleLoginOnly: user.google_login_only === 1,
             authMethod: user.auth_method,
             tokenType: user.token_type
@@ -253,7 +261,7 @@ export async function handleLogout(request, env) {
     }
 }
 
-// 6. עדכון פרופיל (מעודכן עם הגדרות חדשות ודרישת סיסמה חכמה)
+// 6. עדכון פרופיל (מאפשר עדכון חלקי של שדות גם אם שדות אחרים נחסמו)
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
@@ -268,7 +276,7 @@ export async function handleUpdateProfile(request, env) {
         return Response.json({ error: "הטוקן שגוי או שפג תוקפו, אנא התחבר מחדש" }, { status: 401 });
     }
 
-    // בדיקת סיסמה מתבצעת אך ורק אם המשתמש התחבר באמצעות סיסמה
+    // אימות סיסמה קריטי לכל פעולה (אם התחבר דרך סיסמה)
     if (user.auth_method === 'password') {
         if (!password) {
             return Response.json({ error: "חובה להזין את הסיסמה שלך על מנת לשמור שינויים." }, { status: 400 });
@@ -278,30 +286,84 @@ export async function handleUpdateProfile(request, env) {
         }
     }
 
-    try {
-        const finalEmail = newEmail === undefined ? user.email : (newEmail || null);
-        const finalReceive = receiveEmails === undefined ? (user.receive_emails ?? 1) : (receiveEmails ? 1 : 0);
-        const finalGoogleOnly = googleLoginOnly === undefined ? (user.google_login_only ?? 0) : (googleLoginOnly ? 1 : 0);
+    // משתנים לשמירת הערכים הסופיים שייכנסו למסד הנתונים
+    let finalEmail = user.email;
+    let finalReceive = user.receive_emails ?? 1;
+    let finalGoogleOnly = user.google_login_only ?? 0;
+    
+    let messages = [];
+    let errors = [];
 
-        // הגבלה 1: לא ניתן להפעיל "כניסה באמצעות גוגל בלבד" אם ההתחברות הנוכחית היא באמצעות סיסמה
-        if (googleLoginOnly === true && user.auth_method === 'password') {
-            return Response.json({ error: "לא ניתן להפעיל כניסה באמצעות גוגל בלבד כאשר מחוברים עם סיסמה. אנא התחברו דרך חשבון גוגל כדי להפעיל הגדרה זו." }, { status: 403 });
+    // בדיקה והשמה חכמה עבור 'קבלת מיילים'
+    if (receiveEmails !== undefined) {
+        const requestedReceive = receiveEmails ? 1 : 0;
+        if (requestedReceive !== finalReceive) {
+            finalReceive = requestedReceive;
+            messages.push("הגדרות קבלת המיילים עודכנו.");
         }
+    }
 
-        // הגבלה 2: לא ניתן לשנות מייל אם מופעל "כניסה באמצעות גוגל בלבד" מבלי לכבות את ההגדרה
-        if (finalEmail !== user.email) {
-            if (user.google_login_only === 1 && finalGoogleOnly === 1) {
-                return Response.json({ error: "לא ניתן לשנות כתובת אימייל כאשר ההגדרה 'כניסה באמצעות גוגל בלבד' מופעלת. עליך לכבות את ההגדרה תחילה או יחד עם שינוי המייל." }, { status: 403 });
+    // בדיקה והשמה חכמה עבור 'כניסה מגוגל בלבד'
+    if (googleLoginOnly !== undefined) {
+        const requestedGoogleOnly = googleLoginOnly ? 1 : 0;
+        if (requestedGoogleOnly !== finalGoogleOnly) {
+            if (requestedGoogleOnly === 1 && user.auth_method === 'password') {
+                errors.push("לא ניתן להפעיל 'כניסה באמצעות גוגל בלבד' כשמחוברים עם סיסמה. (ההגדרה נדחתה)");
+            } else {
+                finalGoogleOnly = requestedGoogleOnly;
+                messages.push("הגדרת הכניסה באמצעות גוגל עודכנה.");
             }
         }
+    }
 
+    // בדיקה והשמה חכמה עבור 'עדכון אימייל'
+    if (newEmail !== undefined) {
+        const requestedEmail = newEmail || null;
+        if (requestedEmail !== user.email) {
+            // משתמש בערך הסופי של גוגל-בלבד (finalGoogleOnly) כי אולי הוא ביקש לשנות את זה באותה בקשה
+            if (user.google_login_only === 1 && finalGoogleOnly === 1) {
+                errors.push("לא ניתן לשנות כתובת אימייל כאשר ההגדרה 'כניסה מגוגל בלבד' מופעלת. (עדכון המייל נדחה)");
+            } else {
+                finalEmail = requestedEmail;
+                messages.push("כתובת האימייל עודכנה.");
+            }
+        }
+    }
+
+    // אם לא התבצע שום ניסיון לשינוי
+    if (messages.length === 0 && errors.length === 0) {
+        return Response.json({ success: true, message: "לא נשלחו נתונים חדשים לעדכון." });
+    }
+
+    try {
+        // מעדכנים את מסד הנתונים עם כל מה שאושר (או הושאר כמו קודם)
         await env.DB.prepare(
             "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
         ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
 
-        return Response.json({ success: true, message: "הפרטים וההגדרות עודכנו בהצלחה" });
+        const isSuccess = messages.length > 0;
+        const hasErrors = errors.length > 0;
+
+        let finalMessage = "";
+        
+        if (isSuccess && hasErrors) {
+            finalMessage = "בוצע עדכון חלקי:\n" + messages.join("\n") + "\n\nשגיאות:\n" + errors.join("\n");
+        } else if (isSuccess && !hasErrors) {
+            finalMessage = "כל השינויים נשמרו בהצלחה:\n" + messages.join("\n");
+        } else if (!isSuccess && hasErrors) {
+            finalMessage = "העדכון נכשל לחלוטין:\n" + errors.join("\n");
+            // אם הכל נכשל, נחזיר שגיאת לקוח (HTTP 400) במקום סטטוס 200
+            return Response.json({ error: finalMessage }, { status: 400 });
+        }
+
+        return Response.json({ 
+            success: true, 
+            message: finalMessage,
+            partialUpdate: isSuccess && hasErrors // סימון לצד לקוח שהיה עדכון חלקי
+        });
+
     } catch (e) {
-        return Response.json({ error: "שגיאה בעדכון הנתונים. ייתכן והמייל תפוס." }, { status: 400 });
+        return Response.json({ error: "שגיאה במסד הנתונים בעת השמירה. ייתכן וכתובת האימייל כבר תפוסה על ידי חשבון אחר." }, { status: 400 });
     }
 }
 
@@ -383,7 +445,7 @@ export async function handleResetPasswordConfirm(request, env) {
     }
 }
 
-// 9. התחברות באמצעות גוגל (טוקן קבוע)
+// 9. התחברות באמצעות גוגל (טוקן קבוע) - עודכן לתמוך ב-2 קבועים ו-1 זמני
 export async function handleGoogleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { token } = body;
@@ -416,16 +478,17 @@ export async function handleGoogleLogin(request, env) {
         const sessionToken = crypto.randomUUID();
         const createdAtStr = getIsraelTimeForDB();
         const expiresAtStr = null; 
-        
-        // סיווג סוג הטוקן גם לפי אמצעי ההתחברות (גוגל)
         const tokenType = 'google_perm';
 
+        // מחיקת טוקנים קבועים ישנים, נשאיר רק 1 (כך שעם החדש שנוצר עכשיו יהיו מקסימום 2)
+        // טוקנים זמניים של המשתמש כלל לא נמחקים פה.
         await env.DB.prepare(
             `DELETE FROM user_tokens 
              WHERE phone = ? 
+               AND token_type IN ('password_perm', 'google_perm')
                AND id NOT IN (
                    SELECT id FROM user_tokens 
-                   WHERE phone = ? 
+                   WHERE phone = ? AND token_type IN ('password_perm', 'google_perm')
                    ORDER BY created_at DESC 
                    LIMIT 1
                )`
