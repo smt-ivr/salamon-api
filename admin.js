@@ -85,7 +85,8 @@ export async function handleAdminUpdateUser(request, env) {
         }
 
         const finalPassword = newPassword || user.password;
-        const finalEmail = newEmail === undefined ? user.email : (newEmail || null); // הגנה מערכים חסרים
+        // המרה של האימייל החדש לאותיות קטנות (אם הוזן)
+        const finalEmail = newEmail === undefined ? user.email : (newEmail ? String(newEmail).toLowerCase() : null); 
         
         const finalCanUpload = canUpload === undefined ? user.can_upload : (canUpload ? 1 : 0);
         const finalCanRecord = canRecord === undefined ? user.can_record : (canRecord ? 1 : 0);
