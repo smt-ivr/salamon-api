@@ -13,7 +13,8 @@ import {
     authenticateUser,
     handleCheckUnsubscribeToken,
     handleConfirmUnsubscribe,
-    handleUnblockEmail
+    handleUnblockEmail,
+    handleUpdateSingleSetting // <--- הוספנו את ה-Import החדש כאן
 } from './auth.js';
 
 import {
@@ -228,6 +229,13 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/update-profile")) {
                 response = await handleUpdateProfile(request, env);
             }
+            // ============================================
+            // הנתיב החדש עבור עדכון הגדרה בודדת (שמירה אוטומטית)
+            // ============================================
+            else if (request.method === "POST" && pathname.endsWith("/api/update-profile-single")) {
+                response = await handleUpdateSingleSetting(request, env);
+            }
+            // ============================================
             else if (request.method === "POST" && pathname.endsWith("/api/change-password")) {
                 response = await handleChangePassword(request, env);
             }
