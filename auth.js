@@ -3,7 +3,6 @@ import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
 import { sendSecurityAlert } from './emailService.js';
 
-// פונקציית עזר גלובלית לאימות משתמש - מזהה גם את מקור ההתחברות
 export async function authenticateUser(db, userToken) {
     if (!userToken) return null;
 
@@ -37,7 +36,6 @@ export async function authenticateUser(db, userToken) {
     return user;
 }
 
-// 1. צומת הכוונה חכם
 export async function handleCheckIdentifier(request, env) {
     const body = await request.json().catch(() => ({}));
     const { identifier } = body;
@@ -67,7 +65,6 @@ export async function handleCheckIdentifier(request, env) {
     return Response.json({ isRegistered: false, authorized: true, phone: searchIdentifier, name: name, message: "המשתמש מורשה וטרם נרשם. מועבר להרשמה." });
 }
 
-// 2. הרשמה מאובטחת
 export async function handleRegister(request, env) {
     const body = await request.json().catch(() => ({}));
     const { phone, email, password, passwordConfirm, sessionId } = body;
@@ -91,7 +88,7 @@ export async function handleRegister(request, env) {
         const safeEmail = email ? String(email).toLowerCase() : null;
         const nowIsraelStr = getIsraelTimeForDB();
         await env.DB.prepare(
-            `INSERT INTO users (phone, email, password, can_record, can_upload, receive_emails, google_login_only, created_at) VALUES (?, ?, ?, 1, 0, 1, 0, ?)`
+            `INSERT INTO users (phone, email, password, can_record, can_upload, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, created_at) VALUES (?, ?, ?, 1, 0, 1, 0, 1, '', '', ?)`
         ).bind(phone, safeEmail, password, nowIsraelStr).run();
 
         await env.DB.prepare(`UPDATE verification_sessions SET status = 'used' WHERE id = ?`).bind(sessionId).run();
@@ -101,7 +98,6 @@ export async function handleRegister(request, env) {
     }
 }
 
-// 3. התחברות
 export async function handleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { identifier, password, rememberMe } = body;
@@ -131,7 +127,6 @@ export async function handleLogin(request, env) {
     return Response.json({ success: true, message: "התחברת בהצלחה", token: sessionToken });
 }
 
-// 4. שליפת פרופיל משתמש
 export async function handleGetProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken } = body;
@@ -144,7 +139,6 @@ export async function handleGetProfile(request, env) {
     const name = await getNameFromIni(user.phone, env.YEMOT_TOKEN);
     const phoneStatus = await checkPhoneStatus(user.phone, env.YEMOT_TOKEN);
 
-    // וידוא אם המייל נמצא ברשימה השחורה המיוחדת
     let emailGloballyBlocked = false;
     if (user.email) {
         const blockCheck = await env.DB.prepare("SELECT 1 FROM email_blocklist WHERE email = ?").bind(user.email).first();
@@ -160,16 +154,18 @@ export async function handleGetProfile(request, env) {
             connectedToTzintukim: phoneStatus.active,
             canUpload: !!user.can_upload,
             canRecord: user.can_record !== 0,
+            canListen: user.can_listen !== 0,
+            listenWhitelist: user.listen_whitelist || "",
+            listenBlacklist: user.listen_blacklist || "",
             receiveEmails: user.receive_emails !== 0,
             googleLoginOnly: user.google_login_only === 1,
             authMethod: user.auth_method,
             tokenType: user.token_type,
-            emailGloballyBlocked: emailGloballyBlocked // החזרת הנתון ללקוח
+            emailGloballyBlocked: emailGloballyBlocked
         }
     });
 }
 
-// 5. התנתקות
 export async function handleLogout(request, env) {
     try {
         const body = await request.json().catch(() => ({}));
@@ -180,7 +176,6 @@ export async function handleLogout(request, env) {
     } catch (error) { return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 }); }
 }
 
-// 6. עדכון פרופיל
 export async function handleUpdateProfile(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, newEmail, receiveEmails, googleLoginOnly, password } = body;
@@ -264,7 +259,6 @@ export async function handleUpdateProfile(request, env) {
             "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
         ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
 
-        // התיקון: בדיקה גם ל-finalReceive כדי שלא נשלח אם המשתמש כיבה העדפות
         if (finalGoogleOnly === 1 && user.google_login_only === 0 && finalEmail && finalReceive !== 0) {
             try {
                 const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
@@ -291,7 +285,6 @@ export async function handleUpdateProfile(request, env) {
     }
 }
 
-// 7. שינוי סיסמה
 export async function handleChangePassword(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken, oldPassword, newPassword, newPasswordConfirm, logoutAllDevices } = body;
@@ -327,7 +320,6 @@ export async function handleChangePassword(request, env) {
     }
 }
 
-// 8. איפוס סיסמה
 export async function handleResetPasswordConfirm(request, env) {
     const body = await request.json().catch(() => ({}));
     const { phone, password, passwordConfirm, token } = body;
@@ -360,7 +352,6 @@ export async function handleResetPasswordConfirm(request, env) {
     }
 }
 
-// 9. התחברות באמצעות גוגל
 export async function handleGoogleLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { token } = body;
@@ -394,11 +385,6 @@ export async function handleGoogleLogin(request, env) {
     }
 }
 
-// -------------------------------------------------------------
-// פונקציות חדשות לניהול חסימת האימייל (רשימה שחורה)
-// -------------------------------------------------------------
-
-// בדיקת הטוקן לפני החסימה (כדי להציג למשתמש במסך את פרטי החשבון המושפע)
 export async function handleCheckUnsubscribeToken(request, env) {
     const body = await request.json().catch(() => ({}));
     const { token } = body;
@@ -420,7 +406,6 @@ export async function handleCheckUnsubscribeToken(request, env) {
     return Response.json({ success: true, email: record.email, maskedPhone, name });
 }
 
-// אישור החסימה המוחלטת לאחר שהמשתמש אישר בדף
 export async function handleConfirmUnsubscribe(request, env) {
     const body = await request.json().catch(() => ({}));
     const { token } = body;
@@ -430,17 +415,12 @@ export async function handleConfirmUnsubscribe(request, env) {
     if (!record) return Response.json({ error: "הקישור פג תוקף, שגוי או שכבר נעשה בו שימוש." }, { status: 404 });
 
     const nowIsraelStr = getIsraelTimeForDB();
-
-    // הוספה לרשימה השחורה
     await env.DB.prepare("INSERT OR IGNORE INTO email_blocklist (email, created_at) VALUES (?, ?)").bind(record.email, nowIsraelStr).run();
-
-    // מחיקת כל הטוקנים של המייל הזה כדי למנוע שימוש כפול
     await env.DB.prepare("DELETE FROM unsubscribe_tokens WHERE email = ?").bind(record.email).run();
 
     return Response.json({ success: true, message: "האימייל נכנס לרשימה השחורה. לא יישלחו אליו הודעות נוספות מהמערכת." });
 }
 
-// שחרור החסימה דרך הפרופיל - אך ורק לאחר אימות גוגל
 export async function handleUnblockEmail(request, env) {
     const body = await request.json().catch(() => ({}));
     const { userToken } = body;
@@ -452,7 +432,6 @@ export async function handleUnblockEmail(request, env) {
 
     if (!user.email) return Response.json({ error: "אין כתובת אימייל המשויכת לחשבון זה." }, { status: 400 });
 
-    // הליבה: חובה להתחבר עם גוגל ועם האימייל המדויק שנחסם
     if (user.auth_method !== 'google' || user.session_email !== user.email) {
         return Response.json({ error: "לשחרור החסימה והרשימה השחורה, חובה להתחבר לחשבונך מחדש באמצעות חשבון Google המשויך לאימייל זה בדיוק." }, { status: 403 });
     }
