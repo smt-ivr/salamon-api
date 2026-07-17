@@ -3,25 +3,25 @@ import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { authenticateUser } from './auth.js'; 
 import { getIsraelTimeForDB } from './timeUtils.js';
 
-// 1. קבלת רשימת הקבצים + שליפת שם המקליט מתוך קובץ ה-TXT (עם תמיכה בטעינת קבצים נוספים)
 export async function handleGetMessages(request, env) {
     const body = await request.json();
-    // קבלת פרמטר page. אם לא צורף, ערך ברירת המחדל יהיה 1 (הדף הראשון)
     const { userToken, filesLimit = 40, page = 1 } = body; 
-
-    // חישוב הדילוג (offset) על בסיס מספר הדף
     const filesFrom = (page - 1) * filesLimit;
-
     const FOLDER_PATH = 'ivr2:/1/2'; 
 
     if (!userToken) return Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
     
-    // שינוי לאימות חכם תואם טוקנים וסיסמאות
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ error: "הרשאות משתמש לא חוקיות" }, { status: 403 });
 
+    if (user.can_listen === 0) {
+        return Response.json({ success: true, messages: [] });
+    }
+
+    const whitelist = (user.listen_whitelist || "").split(',').map(s => s.trim()).filter(Boolean);
+    const blacklist = (user.listen_blacklist || "").split(',').map(s => s.trim()).filter(Boolean);
+
     const token = env.YEMOT_TOKEN;
-    // שליחת filesLimit ו-filesFrom (שחושב מהדף) ל-URL של ימות המשיח
     const url = `https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FOLDER_PATH)}&filesLimit=${filesLimit}&filesFrom=${filesFrom}`;
     
     try {
@@ -43,7 +43,7 @@ export async function handleGetMessages(request, env) {
             
             let recorderName = "";
             let recorderPhone = ""; 
-            let fromWebType = false; // false = phone, 'record' = web record, 'file' = web file upload
+            let fromWebType = false; 
 
             try {
                 const txtRes = await fetch(txtUrl);
@@ -55,8 +55,6 @@ export async function handleGetMessages(request, env) {
                         }
                         if (txtData.contents.includes('ValName-')) {
                             recorderName = txtData.contents.split('ValName-')[1].trim();
-                            
-                            // זיהוי מקור ההודעה לפי התגיות
                             if (recorderName.includes('[WEB_FILE]')) {
                                 fromWebType = 'file';
                                 recorderName = recorderName.replace('[WEB_FILE]', '').trim();
@@ -64,19 +62,24 @@ export async function handleGetMessages(request, env) {
                                 fromWebType = 'record';
                                 recorderName = recorderName.replace('[WEB_REC]', '').trim();
                             } else if (recorderName.includes('[WEB]')) { 
-                                fromWebType = 'record'; // תאימות למודל הקודם
+                                fromWebType = 'record';
                                 recorderName = recorderName.replace('[WEB]', '').trim();
                             } else if (recorderName.includes('(דרך האתר)')) { 
-                                fromWebType = 'record'; // תאימות למודל הישן ביותר
+                                fromWebType = 'record';
                                 recorderName = recorderName.replace('(דרך האתר)', '').trim();
                             }
-
                         } else if (recorderPhone) {
                             recorderName = recorderPhone;
                         }
                     }
                 }
             } catch (e) {}
+
+            const targetPhone = recorderPhone || file.phone;
+            
+            // סינון הודעות לפי רשימות לבנות או שחורות
+            if (whitelist.length > 0 && !whitelist.includes(targetPhone)) return null;
+            if (blacklist.length > 0 && blacklist.includes(targetPhone)) return null;
 
             const isOutgoing = !!(user.phone && (recorderPhone === user.phone || file.phone === user.phone));
 
@@ -87,17 +90,17 @@ export async function handleGetMessages(request, env) {
                 mtime: file.mtime,
                 valName: recorderName || file.phone || "מערכת / לא מזוהה",
                 isOutgoing: isOutgoing,
-                fromWebType: fromWebType // העברת סוג המקור ללקוח
+                fromWebType: fromWebType
             };
         }));
 
-        return Response.json({ success: true, messages });
+        const validMessages = messages.filter(Boolean);
+        return Response.json({ success: true, messages: validMessages });
     } catch (error) {
         return Response.json({ error: "שגיאת שרת פנימית בעת קריאת התיקייה" }, { status: 500 });
     }
 }
 
-// 2. הזרמת הקובץ לנגן והוספת מונה האזנות ברקע
 export async function handleStreamMessage(request, env, ctx) {
     const url = new URL(request.url);
     const userToken = url.searchParams.get('userToken');
@@ -111,18 +114,42 @@ export async function handleStreamMessage(request, env, ctx) {
         return new Response("שגיאה: מזהה קובץ לא חוקי. מותרים מספרים בלבד.", { status: 403 });
     }
 
-    const filePath = `ivr2:/1/2/${fileId}.wav`;
-    const fileName = `${fileId}.wav`;
-
-    // שינוי לאימות חכם תואם טוקנים וסיסמאות
     const user = await authenticateUser(env.DB, userToken);
     if (!user) {
         return new Response("גישה נדחתה: משתמש לא מורשה", { status: 403 });
     }
 
-    // =====================================================================
-    // רישום האזנה ברקע (מקבילי) - לא מעכב את תחילת ניגון השמע
-    // =====================================================================
+    if (user.can_listen === 0) {
+        return new Response("גישה נדחתה: האזנה להודעות חסומה עבורך", { status: 403 });
+    }
+
+    const whitelist = (user.listen_whitelist || "").split(',').map(s => s.trim()).filter(Boolean);
+    const blacklist = (user.listen_blacklist || "").split(',').map(s => s.trim()).filter(Boolean);
+    
+    if (whitelist.length > 0 || blacklist.length > 0) {
+        const txtUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${env.YEMOT_TOKEN}&what=${encodeURIComponent(`ivr2:/1/2/${fileId}.txt`)}`;
+        let targetPhone = "";
+        try {
+            const txtRes = await fetch(txtUrl);
+            if (txtRes.ok) {
+                const txtData = await txtRes.json();
+                if (txtData.responseStatus === 'OK' && txtData.contents) {
+                    if (txtData.contents.includes('Phone-')) {
+                        targetPhone = txtData.contents.split('Phone-')[1].split('-')[0].trim();
+                    }
+                }
+            }
+        } catch(e) {}
+        
+        if (targetPhone) {
+            if (whitelist.length > 0 && !whitelist.includes(targetPhone)) return new Response("גישה נדחתה: חסום עקב רשימה לבנה", { status: 403 });
+            if (blacklist.length > 0 && blacklist.includes(targetPhone)) return new Response("גישה נדחתה: חסום עקב רשימה שחורה", { status: 403 });
+        }
+    }
+
+    const filePath = `ivr2:/1/2/${fileId}.wav`;
+    const fileName = `${fileId}.wav`;
+
     const nowIsraelStr = getIsraelTimeForDB();
     const logPromise = env.DB.prepare(
         `INSERT OR IGNORE INTO message_listens (file_id, phone, listened_at) VALUES (?, ?, ?)`
@@ -131,7 +158,6 @@ export async function handleStreamMessage(request, env, ctx) {
     if (ctx && ctx.waitUntil) {
         ctx.waitUntil(logPromise);
     }
-    // =====================================================================
 
     const token = env.YEMOT_TOKEN;
     const downloadUrl = `https://www.call2all.co.il/ym/api/DownloadFile?token=${token}&path=${encodeURIComponent(filePath)}`;
