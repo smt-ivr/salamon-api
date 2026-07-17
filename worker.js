@@ -1,4 +1,4 @@
-// worker.js (צד שרת - API)
+// worker.js
 
 import { 
     handleCheckIdentifier, 
@@ -23,7 +23,9 @@ import {
     handleAdminGetUserFullProfile,       
     handleAdminDisconnectUserTokens,
     handleAdminCreateUser,
-    handleAdminDeleteUser
+    handleAdminDeleteUser,
+    handleAdminGetTables,
+    handleAdminExecuteQuery
 } from './admin.js';
 
 import { VerificationSystem } from './verification.js';
@@ -245,7 +247,7 @@ export default {
             }
             
             // ============================================
-            // ממשק מנהל לניהול משתמשים
+            // ממשק מנהל לניהול משתמשים ו-SQL מסוף
             // ============================================
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) {
                 response = await handleAdminLogin(request, env);
@@ -267,6 +269,12 @@ export default {
             }
             else if (request.method === "POST" && pathname.endsWith("/api/admin/delete-user")) {
                 response = await handleAdminDeleteUser(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/sql/tables")) {
+                response = await handleAdminGetTables(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/sql/execute")) {
+                response = await handleAdminExecuteQuery(request, env);
             }
             else {
                 response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
