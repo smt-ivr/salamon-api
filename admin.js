@@ -24,7 +24,7 @@ export async function handleAdminGetUsers(request, env) {
 
     try {
         const [dbUsersRes, yemotUsers, namesMap] = await Promise.all([
-            env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at, can_listen, listen_whitelist, listen_blacklist FROM users").all(),
+            env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture FROM users").all(),
             getAllYemotUsers(env.YEMOT_TOKEN),
             getAllNamesFromIni(env.YEMOT_TOKEN)
         ]);
@@ -50,6 +50,8 @@ export async function handleAdminGetUsers(request, env) {
                 canListen: dbUser ? dbUser.can_listen !== 0 : true,
                 listenWhitelist: dbUser ? (dbUser.listen_whitelist || "") : "",
                 listenBlacklist: dbUser ? (dbUser.listen_blacklist || "") : "",
+                profilePictureUrl: dbUser ? (dbUser.profile_picture_url || "") : "",
+                lockProfilePicture: dbUser ? dbUser.lock_profile_picture === 1 : false,
                 createdAt: dbUser ? dbUser.created_at : null
             });
         }
@@ -68,6 +70,8 @@ export async function handleAdminGetUsers(request, env) {
                     canListen: du.can_listen !== 0,
                     listenWhitelist: du.listen_whitelist || "",
                     listenBlacklist: du.listen_blacklist || "",
+                    profilePictureUrl: du.profile_picture_url || "",
+                    lockProfilePicture: du.lock_profile_picture === 1,
                     createdAt: du.created_at
                 });
             }
@@ -105,7 +109,7 @@ export async function handleAdminUpdateUser(request, env) {
     const body = await request.json().catch(() => ({}));
     if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
-    const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist } = body;
+    const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, profilePictureUrl, lockProfilePicture } = body;
     if (!phone) return Response.json({ error: "חובה לציין מספר טלפון של המשתמש לעדכון" }, { status: 400 });
 
     try {
@@ -122,10 +126,12 @@ export async function handleAdminUpdateUser(request, env) {
         const f_listen = canListen === undefined ? (user.can_listen ?? 1) : (canListen ? 1 : 0);
         const f_whitelist = listenWhitelist === undefined ? (user.listen_whitelist || "") : listenWhitelist;
         const f_blacklist = listenBlacklist === undefined ? (user.listen_blacklist || "") : listenBlacklist;
+        const f_picture = profilePictureUrl === undefined ? user.profile_picture_url : profilePictureUrl;
+        const f_lockPic = lockProfilePicture === undefined ? (user.lock_profile_picture ?? 0) : (lockProfilePicture ? 1 : 0);
 
         await env.DB.prepare(
-            `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=?, can_listen=?, listen_whitelist=?, listen_blacklist=? WHERE phone=?`
-        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, phone).run();
+            `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=?, can_listen=?, listen_whitelist=?, listen_blacklist=?, profile_picture_url=?, lock_profile_picture=? WHERE phone=?`
+        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, f_picture, f_lockPic, phone).run();
 
         return Response.json({ success: true, message: "נתוני המשתמש והרשאותיו עודכנו בהצלחה" });
     } catch (e) { return Response.json({ error: "שגיאה בעדכון המשתמש: " + e.message }, { status: 500 }); }
@@ -172,8 +178,8 @@ export async function handleAdminCreateUser(request, env) {
 
         const nowIsraelStr = getIsraelTimeForDB();
         await env.DB.prepare(
-            `INSERT INTO users (phone, email, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, created_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            `INSERT INTO users (phone, email, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, created_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)`
         ).bind(phone, finalEmail, password, f_record, f_upload, f_tzintuk, f_receive, f_google, f_listen, f_whitelist, f_blacklist, nowIsraelStr).run();
 
         return Response.json({ success: true, message: "החשבון נוצר בהצלחה!" });
