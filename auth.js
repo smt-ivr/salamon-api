@@ -159,6 +159,8 @@ export async function handleGetProfile(request, env) {
             listenBlacklist: user.listen_blacklist || "",
             receiveEmails: user.receive_emails !== 0,
             googleLoginOnly: user.google_login_only === 1,
+            profilePictureUrl: user.profile_picture_url || "",
+            lockProfilePicture: user.lock_profile_picture === 1,
             authMethod: user.auth_method,
             tokenType: user.token_type,
             emailGloballyBlocked: emailGloballyBlocked
@@ -369,6 +371,12 @@ export async function handleGoogleLogin(request, env) {
         const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
 
         if (!user) return Response.json({ error: `כתובת האימייל (${email}) אינה משויכת לאף חשבון במערכת.` }, { status: 404 });
+
+        // עדכון תמונת הפרופיל מגוגל, כל עוד האפשרות לא נחסמה על ידי מנהל
+        const pictureUrl = googleData.picture || null;
+        if (pictureUrl && user.lock_profile_picture !== 1) {
+            await env.DB.prepare("UPDATE users SET profile_picture_url = ? WHERE phone = ?").bind(pictureUrl, user.phone).run();
+        }
 
         const sessionToken = crypto.randomUUID();
         const createdAtStr = getIsraelTimeForDB();
