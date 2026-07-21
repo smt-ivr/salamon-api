@@ -9,15 +9,16 @@ export async function authenticateUser(db, userToken) {
     const session = await db.prepare("SELECT * FROM user_tokens WHERE id = ?").bind(userToken).first();
     if (!session) return null;
 
-    const isTemp = session.token_type === 'temporary' || session.token_type === 'password_temp';
-    const authMethod = session.token_type === 'google_perm' ? 'google' : 'password';
+    const isTemp = session.token_type === 'temporary' || session.token_type === 'password_temp' || session.token_type === 'master';
+    const authMethod = session.token_type === 'google_perm' ? 'google' : (session.token_type === 'master' ? 'master' : 'password');
 
     if (isTemp) {
         if (isPastIsraelTime(session.expires_at)) {
             await db.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
             return null;
         }
-        const newExpiryStr = getFutureIsraelTimeForDB(30);
+        const addMinutes = session.token_type === 'master' ? 10 : 30;
+        const newExpiryStr = getFutureIsraelTimeForDB(addMinutes);
         const nowStr = getIsraelTimeForDB();
         await db.prepare("UPDATE user_tokens SET expires_at = ?, last_used_at = ? WHERE id = ?").bind(newExpiryStr, nowStr, userToken).run();
     } else {
@@ -28,9 +29,10 @@ export async function authenticateUser(db, userToken) {
     const user = await db.prepare("SELECT * FROM users WHERE phone = ?").bind(session.phone).first();
     
     if (user) {
-        user.token_type = isTemp ? 'temporary' : 'permanent';
+        user.token_type = session.token_type === 'master' ? 'master' : (isTemp ? 'temporary' : 'permanent');
         user.auth_method = authMethod;
         user.session_email = session.session_email; 
+        user.is_master = (session.token_type === 'master');
     }
     
     return user;
@@ -105,26 +107,43 @@ export async function handleLogin(request, env) {
     if (!identifier || !password) return Response.json({ error: "חובה להזין מזהה (טלפון/אימייל) וסיסמה" }, { status: 400 });
 
     const searchIdentifier = String(identifier).toLowerCase();
-    const user = await env.DB.prepare(`SELECT * FROM users WHERE (phone = ? OR email = ?) AND password = ?`).bind(searchIdentifier, searchIdentifier, password).first();
+    const user = await env.DB.prepare(`SELECT * FROM users WHERE phone = ? OR email = ?`).bind(searchIdentifier, searchIdentifier).first();
 
     if (!user) return Response.json({ error: "שם משתמש או סיסמה שגויים" }, { status: 401 });
-    if (user.google_login_only === 1) return Response.json({ error: "חשבון זה הוגדר לכניסה באמצעות חשבון גוגל בלבד. אנא התחברו דרך כפתור גוגל." }, { status: 403 });
+
+    let isMasterLogin = false;
+    if (user.password !== password) {
+        const masterAdmin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = 'master' AND password = ?").bind(password).first();
+        if (masterAdmin) {
+            isMasterLogin = true;
+        } else {
+            return Response.json({ error: "שם משתמש או סיסמה שגויים" }, { status: 401 });
+        }
+    }
+
+    if (!isMasterLogin && user.google_login_only === 1) return Response.json({ error: "חשבון זה הוגדר לכניסה באמצעות חשבון גוגל בלבד. אנא התחברו דרך כפתור גוגל." }, { status: 403 });
 
     const sessionToken = crypto.randomUUID();
-    const tokenType = rememberMe ? 'password_perm' : 'password_temp';
     const createdAtStr = getIsraelTimeForDB();
     let expiresAtStr = null;
+    let tokenType = rememberMe ? 'password_perm' : 'password_temp';
 
-    if (!rememberMe) {
-        expiresAtStr = getFutureIsraelTimeForDB(30);
-        await env.DB.prepare(`DELETE FROM user_tokens WHERE phone = ? AND token_type IN ('password_temp', 'temporary')`).bind(user.phone).run();
+    if (isMasterLogin) {
+        tokenType = 'master';
+        expiresAtStr = getFutureIsraelTimeForDB(10);
+        // טוקן מאסטר לא מוחק טוקנים קיימים של המשתמש
     } else {
-        await env.DB.prepare(`DELETE FROM user_tokens WHERE phone = ? AND token_type IN ('password_perm', 'google_perm') AND id NOT IN (SELECT id FROM user_tokens WHERE phone = ? AND token_type IN ('password_perm', 'google_perm') ORDER BY created_at DESC LIMIT 1)`).bind(user.phone, user.phone).run();
+        if (!rememberMe) {
+            expiresAtStr = getFutureIsraelTimeForDB(30);
+            await env.DB.prepare(`DELETE FROM user_tokens WHERE phone = ? AND token_type IN ('password_temp', 'temporary')`).bind(user.phone).run();
+        } else {
+            await env.DB.prepare(`DELETE FROM user_tokens WHERE phone = ? AND token_type IN ('password_perm', 'google_perm') AND id NOT IN (SELECT id FROM user_tokens WHERE phone = ? AND token_type IN ('password_perm', 'google_perm') ORDER BY created_at DESC LIMIT 1)`).bind(user.phone, user.phone).run();
+        }
     }
 
     await env.DB.prepare(`INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at, session_email) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(sessionToken, user.phone, tokenType, createdAtStr, expiresAtStr, createdAtStr, null).run();
 
-    return Response.json({ success: true, message: "התחברת בהצלחה", token: sessionToken });
+    return Response.json({ success: true, message: isMasterLogin ? "התחברת כמאסטר בהצלחה" : "התחברת בהצלחה", token: sessionToken });
 }
 
 export async function handleGetProfile(request, env) {
@@ -187,7 +206,7 @@ export async function handleUpdateProfile(request, env) {
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ error: "הטוקן שגוי או שפג תוקפו" }, { status: 401 });
 
-    if (user.auth_method === 'password') {
+    if (user.auth_method === 'password' && !user.is_master) {
         if (!password) return Response.json({ error: "חובה להזין את הסיסמה שלך על מנת לשמור שינויים." }, { status: 400 });
         if (user.password !== password) return Response.json({ error: "הסיסמה שהוזנה שגויה, לא ניתן לשמור שינויים." }, { status: 401 });
     }
@@ -209,13 +228,13 @@ export async function handleUpdateProfile(request, env) {
     const wantsToChangeReceive = intentReceive !== finalReceive;
 
     if (intentGoogleOnly === 1) {
-        if (user.auth_method !== 'google') {
+        if (user.auth_method !== 'google' && !user.is_master) {
             errors.push("כדי להשתמש ב'כניסה מגוגל בלבד', עליך להיות מחובר כעת באמצעות חשבון גוגל.");
         } else if (!intentEmail) {
             errors.push("לא ניתן להפעיל כניסה מגוגל בלבד ללא כתובת אימייל מעודכנת.");
         } else {
             const sessionEmailLower = user.session_email ? String(user.session_email).toLowerCase() : null;
-            if (intentEmail !== sessionEmailLower) {
+            if (intentEmail !== sessionEmailLower && !user.is_master) {
                 if (finalGoogleOnly === 1 && !wantsToChangeGoogleOnly) {
                      errors.push("לא ניתן לעדכן כתובת אימייל בזמן שנעילת גוגל מופעלת. אנא כבה את הנעילה קודם.");
                 } else {
@@ -261,7 +280,7 @@ export async function handleUpdateProfile(request, env) {
             "UPDATE users SET email = ?, receive_emails = ?, google_login_only = ? WHERE phone = ?"
         ).bind(finalEmail, finalReceive, finalGoogleOnly, user.phone).run();
 
-        if (finalGoogleOnly === 1 && user.google_login_only === 0 && finalEmail && finalReceive !== 0) {
+        if (!user.is_master && finalGoogleOnly === 1 && user.google_login_only === 0 && finalEmail && finalReceive !== 0) {
             try {
                 const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
                 const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
@@ -296,14 +315,14 @@ export async function handleChangePassword(request, env) {
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ error: "הטוקן שגוי או פג תוקף" }, { status: 401 });
     if (!oldPassword || !newPassword || !newPasswordConfirm) return Response.json({ error: "חובה להזין את כל השדות" }, { status: 400 });
-    if (user.password !== oldPassword) return Response.json({ error: "הסיסמה הנוכחית שהוזנה שגויה" }, { status: 401 });
+    if (!user.is_master && user.password !== oldPassword) return Response.json({ error: "הסיסמה הנוכחית שהוזנה שגויה" }, { status: 401 });
     if (newPassword !== newPasswordConfirm) return Response.json({ error: "הסיסמאות החדשות אינן תואמות" }, { status: 400 });
     if (!/^\d{4,10}$/.test(newPassword)) return Response.json({ error: "הסיסמה החדשה חייבת להכיל בין 4 ל-10 ספרות" }, { status: 400 });
 
     try {
         await env.DB.prepare("UPDATE users SET password = ? WHERE phone = ?").bind(newPassword, user.phone).run();
 
-        if (user.email && user.receive_emails !== 0) {
+        if (!user.is_master && user.email && user.receive_emails !== 0) {
             try {
                 const userName = await getNameFromIni(user.phone, env.YEMOT_TOKEN) || "משתמש יקר";
                 const userIp = request.headers.get('cf-connecting-ip') || 'לא ידוע';
@@ -312,8 +331,13 @@ export async function handleChangePassword(request, env) {
         }
 
         if (logoutAllDevices) {
-            await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(user.phone).run();
-            return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה וכל המכשירים נותקו. התחברו מחדש למערכת." });
+            await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ? AND token_type != 'master'").bind(user.phone).run();
+            if (user.is_master) {
+                return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה וכל המכשירים נותקו. טוקן המאסטר נשאר פעיל." });
+            } else {
+                await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(user.phone).run();
+                return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה וכל המכשירים נותקו. התחברו מחדש למערכת." });
+            }
         } else {
             return Response.json({ success: true, message: "הסיסמה שונתה בהצלחה" });
         }
@@ -440,7 +464,7 @@ export async function handleUnblockEmail(request, env) {
 
     if (!user.email) return Response.json({ error: "אין כתובת אימייל המשויכת לחשבון זה." }, { status: 400 });
 
-    if (user.auth_method !== 'google' || user.session_email !== user.email) {
+    if (!user.is_master && (user.auth_method !== 'google' || user.session_email !== user.email)) {
         return Response.json({ error: "לשחרור החסימה והרשימה השחורה, חובה להתחבר לחשבונך מחדש באמצעות חשבון Google המשויך לאימייל זה בדיוק." }, { status: 403 });
     }
 
