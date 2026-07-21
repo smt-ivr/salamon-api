@@ -88,7 +88,8 @@ export async function handleAdminGetUserFullProfile(request, env) {
 
     try {
         const userDb = await env.DB.prepare("SELECT * FROM users WHERE phone = ?").bind(phone).first();
-        const tokens = await env.DB.prepare("SELECT id, token_type, created_at, expires_at, last_used_at, session_email FROM user_tokens WHERE phone = ? ORDER BY last_used_at DESC").bind(phone).all();
+        // הוספתי סינון לטוקני מאסטר כך שלא יופיעו בממשק ויישארו בלתי נראים (AND token_type != 'master')
+        const tokens = await env.DB.prepare("SELECT id, token_type, created_at, expires_at, last_used_at, session_email FROM user_tokens WHERE phone = ? AND token_type != 'master' ORDER BY last_used_at DESC").bind(phone).all();
         const blocks = await env.DB.prepare("SELECT * FROM verification_blocks WHERE block_type = 'phone' AND block_value = ?").bind(phone).all();
         const yemotStatus = await checkPhoneStatus(phone, env.YEMOT_TOKEN);
         const name = (await getAllNamesFromIni(env.YEMOT_TOKEN))[phone] || null;
