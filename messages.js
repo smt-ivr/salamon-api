@@ -150,13 +150,16 @@ export async function handleStreamMessage(request, env, ctx) {
     const filePath = `ivr2:/1/2/${fileId}.wav`;
     const fileName = `${fileId}.wav`;
 
-    const nowIsraelStr = getIsraelTimeForDB();
-    const logPromise = env.DB.prepare(
-        `INSERT OR IGNORE INTO message_listens (file_id, phone, listened_at) VALUES (?, ?, ?)`
-    ).bind(fileId.toString(), user.phone, nowIsraelStr).run().catch(err => console.error("DB Log Error:", err));
-    
-    if (ctx && ctx.waitUntil) {
-        ctx.waitUntil(logPromise);
+    // השינוי: אם זה מאסטר - לא לרשום האזנה במסד הנתונים
+    if (!user.is_master) {
+        const nowIsraelStr = getIsraelTimeForDB();
+        const logPromise = env.DB.prepare(
+            `INSERT OR IGNORE INTO message_listens (file_id, phone, listened_at) VALUES (?, ?, ?)`
+        ).bind(fileId.toString(), user.phone, nowIsraelStr).run().catch(err => console.error("DB Log Error:", err));
+        
+        if (ctx && ctx.waitUntil) {
+            ctx.waitUntil(logPromise);
+        }
     }
 
     const token = env.YEMOT_TOKEN;
