@@ -5,9 +5,14 @@ import { authenticateUser } from './auth.js';
 const DELETE_WINDOW_HOURS = 12; 
 const FOLDER_PATH = 'ivr2:/1/2'; 
 
-async function checkEligibility(db, phone, fileName) {
+async function checkEligibility(db, phone, fileName, isMaster) {
     if (!fileName || !fileName.match(/^\d+\.wav$/)) {
         return { allowed: false, message: "שם קובץ לא חוקי. ניתן למחוק קבצי שמע מסוג מספרי בלבד." };
+    }
+
+    // מאסטר עוקף את כל הגבלות המחיקה
+    if (isMaster) {
+        return { allowed: true };
     }
 
     const anyUpload = await db.prepare(
@@ -49,11 +54,10 @@ export async function handleCheckDeleteEligibility(request, env) {
     const userToken = body.userToken;
     const fileName = body.fileName;
 
-    // שינוי לאימות חכם תואם טוקנים וסיסמאות
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ success: false, message: "אימות נכשל, התחבר מחדש." }, { status: 403 });
 
-    const eligibility = await checkEligibility(env.DB, user.phone, fileName);
+    const eligibility = await checkEligibility(env.DB, user.phone, fileName, user.is_master);
     return Response.json({ success: eligibility.allowed, message: eligibility.message });
 }
 
@@ -62,11 +66,10 @@ export async function handleDeleteMessage(request, env, userIp) {
     const userToken = body.userToken;
     const fileName = body.fileName;
 
-    // שינוי לאימות חכם תואם טוקנים וסיסמאות
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ success: false, message: "אימות נכשל" }, { status: 403 });
 
-    const eligibility = await checkEligibility(env.DB, user.phone, fileName);
+    const eligibility = await checkEligibility(env.DB, user.phone, fileName, user.is_master);
     if (!eligibility.allowed) {
         return Response.json({ success: false, message: eligibility.message });
     }
@@ -93,8 +96,9 @@ export async function handleDeleteMessage(request, env, userIp) {
             const currentTimeIsrael = getIsraelTimeForDB();
             const safeIp = userIp || '0.0.0.0';
 
+            // מוחקים את הקובץ מטבלת ההעלאות לפי השם שלו, כדי שמאסטר יוכל למחוק קבצים של אחרים
             await env.DB.batch([
-                env.DB.prepare(`DELETE FROM upload_events WHERE phone = ? AND file_name = ?`).bind(user.phone, fileName),
+                env.DB.prepare(`DELETE FROM upload_events WHERE file_name = ?`).bind(fileName),
                 env.DB.prepare(`INSERT INTO delete_logs (phone, ip_address, file_name, deleted_at) VALUES (?, ?, ?, ?)`).bind(user.phone, safeIp, fileName, currentTimeIsrael)
             ]);
             
