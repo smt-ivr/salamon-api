@@ -1,3 +1,4 @@
+// systemMessage.js
 import { authenticateUser } from './auth.js';
 import { getIsraelTimeForDB, getMinutesSinceIsraelDbTime } from './timeUtils.js';
 
@@ -55,7 +56,10 @@ export async function handleGetSystemMessagesForUser(request, env, userIp) {
                 expiresAt: msg.expires_at, showViewCount: msg.show_view_count === 1, globalViews: globalViews
             });
 
-            await env.DB.prepare(`INSERT INTO system_message_logs (message_id, phone, viewed_at, ip_address) VALUES (?, ?, ?, ?)`).bind(msg.id, user.phone, nowIsraelStr, safeIp).run();
+            // השינוי: רישום צפייה מתבצע אך ורק אם המשתמש הוא לא מאסטר
+            if (!user.is_master) {
+                await env.DB.prepare(`INSERT INTO system_message_logs (message_id, phone, viewed_at, ip_address) VALUES (?, ?, ?, ?)`).bind(msg.id, user.phone, nowIsraelStr, safeIp).run();
+            }
         }
 
         return Response.json({ success: true, messages: eligibleMessages });
@@ -126,7 +130,6 @@ export async function handleAdminDeleteSystemMessage(request, env) {
     } catch (e) { return Response.json({ error: "שגיאה" }, { status: 500 }); }
 }
 
-// פונקציה חדשה: שליפת היסטוריית צפיות ספציפית למודעה
 export async function handleAdminGetAdLogs(request, env) {
     try {
         const body = await request.json().catch(() => ({}));
