@@ -1,52 +1,25 @@
 // worker.js
-
-import { 
-    handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail
-} from './auth.js';
-
-import {
-    handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery
-} from './admin.js';
-
+import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
+import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
-
-import { 
-    handleGetSystemMessagesForUser, handleAdminListSystemMessages, handleAdminSaveSystemMessage, handleAdminDeleteSystemMessage, handleAdminGetAdLogs
-} from './systemMessage.js';
-
+import { handleGetSystemMessagesForUser, handleAdminListSystemMessages, handleAdminSaveSystemMessage, handleAdminDeleteSystemMessage, handleAdminGetAdLogs } from './systemMessage.js';
 import { handleGetListenStats } from './listenStats.js';
 import { handlePhoneApiStats } from './phoneApi.js';
 import { handleGetSystemStats } from './stats.js';
 
-// ייבוא מודול הצ'אט
 import {
-    handleUserGetChat,
-    handleUserCheckUnread,
-    handleUserSendMessage,
-    handleUserMarkRead,
-    handleUserDeleteMessage,
-    handleAdminGetConversations,
-    handleAdminGetChat,
-    handleAdminSendMessage,
-    handleAdminMarkRead,
-    handleAdminDeleteMessage as handleAdminDeleteChatMessage
+    handleUserGetChat, handleUserCheckUnread, handleUserSendMessage, handleUserMarkRead, handleUserDeleteMessage,
+    handleAdminGetConversations, handleAdminGetChat, handleAdminSendMessage, handleAdminMarkRead, handleAdminDeleteMessage as handleAdminDeleteChatMessage, handleAdminSendCustomEmail
 } from './chat.js';
 
 export default {
     async fetch(request, env, ctx) {
-        const corsHeaders = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,HEAD,POST,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-        };
-
-        if (request.method === "OPTIONS") {
-            return new Response(null, { headers: corsHeaders });
-        }
+        const corsHeaders = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,HEAD,POST,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" };
+        if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
         const url = new URL(request.url);
         const pathname = url.pathname.replace(/\/$/, "");
@@ -56,26 +29,21 @@ export default {
             let response;
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
 
-            // API פתוח לימות המשיח
-            if (pathname.endsWith("/api/phone/stats")) {
-                response = await handlePhoneApiStats(request, env);
-            }
-            // מודעות מערכת
+            if (pathname.endsWith("/api/phone/stats")) response = await handlePhoneApiStats(request, env);
+            
             else if (request.method === "POST" && pathname.endsWith("/api/system-message")) response = await handleGetSystemMessagesForUser(request, env, userIp);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/list")) response = await handleAdminListSystemMessages(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/save")) response = await handleAdminSaveSystemMessage(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/delete")) response = await handleAdminDeleteSystemMessage(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/logs")) response = await handleAdminGetAdLogs(request, env);
             
-            // הודעות קוליות וצינתוקים
             else if (request.method === "POST" && pathname.endsWith("/api/messages/list")) response = await handleGetMessages(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/messages/upload")) response = await handleUploadMessage(request, env);
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) response = await handleStreamMessage(request, env, ctx);
             else if (request.method === "POST" && pathname.endsWith("/api/messages/tzintuk")) {
                 const body = await request.json().catch(() => ({}));
-                if (!body.userToken) {
-                    response = Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
-                } else {
+                if (!body.userToken) response = Response.json({ error: "חסר אימות משתמש" }, { status: 401 });
+                else {
                     const user = await authenticateUser(env.DB, body.userToken);
                     if (!user) response = Response.json({ error: "הרשאות משתמש לא חוקיות או פג תוקף" }, { status: 403 });
                     else {
@@ -89,12 +57,11 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/messages/stats")) response = await handleGetListenStats(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/stats/members")) response = await handleGetSystemStats(request, env);
 
-            // אימות ורישום
             else if (request.method === "POST" && pathname.endsWith("/api/verify/send")) {
                 const body = await request.json().catch(() => ({}));
                 if (body.intent === 'reset') {
                     const identifier = body.identifier || body.phone;
-                    if (!identifier) response = Response.json({ error: "חסר מזהה משתמש (טלפון או אימייל)" }, { status: 400 });
+                    if (!identifier) response = Response.json({ error: "חסר מזהה משתמש" }, { status: 400 });
                     else {
                         const result = await verifySystem.requestPasswordReset(identifier, userIp, env);
                         response = Response.json({ success: result.success, message: result.message, sessionId: result.sessionId, phone: result.phone }, { status: result.success ? 200 : 400 });
@@ -109,14 +76,13 @@ export default {
             }
             else if (request.method === "POST" && pathname.endsWith("/api/verify/check")) {
                 const body = await request.json().catch(() => ({}));
-                if (!body.sessionId || !body.phone || !body.code) response = Response.json({ error: "חסרים פרטי אימות (sessionId, phone, code)" }, { status: 400 });
+                if (!body.sessionId || !body.phone || !body.code) response = Response.json({ error: "חסרים פרטי אימות" }, { status: 400 });
                 else {
                     const result = await verifySystem.verifyCode(body.sessionId, body.phone, userIp, body.code);
                     response = Response.json(result, { status: result.success ? 200 : 400 });
                 }
             }
 
-            // צ'אט
             else if (request.method === "POST" && pathname.endsWith("/api/chat/list")) response = await handleUserGetChat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/unread")) response = await handleUserCheckUnread(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) response = await handleUserSendMessage(request, env);
@@ -125,20 +91,19 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/conversations")) response = await handleAdminGetConversations(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/list")) response = await handleAdminGetChat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/send")) response = await handleAdminSendMessage(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/custom-email")) response = await handleAdminSendCustomEmail(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/read")) response = await handleAdminMarkRead(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/delete")) response = await handleAdminDeleteChatMessage(request, env);
 
-            // ניהול ולוגים 
             else if (pathname.includes("/api/verify/admin/")) {
                 if (request.method !== "POST") response = Response.json({ error: "מתודה לא מורשית" }, { status: 405 });
                 else {
                     const body = await request.json().catch(() => ({}));
                     const adminToken = body.adminToken;
-                    if (!adminToken || !adminToken.includes(':')) response = Response.json({ error: "חסר אימות מנהל או פורמט שגוי" }, { status: 401 });
+                    if (!adminToken || !adminToken.includes(':')) response = Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
                     else {
                         const [username, adminPass] = adminToken.split(':');
                         const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
-                        
                         if (!admin) response = Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
                         else {
                             if (pathname.endsWith("/api/verify/admin/logs")) response = Response.json(await verifySystem.getLogs(body.limit || 100, body.offset || 0));
@@ -152,7 +117,6 @@ export default {
                 }
             }
 
-            // User Management
             else if (request.method === "POST" && pathname.endsWith("/api/check-identifier")) response = await handleCheckIdentifier(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/register")) response = await handleRegister(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/login")) response = await handleLogin(request, env);
@@ -166,7 +130,6 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/unsubscribe/confirm")) response = await handleConfirmUnsubscribe(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/unblock-email")) response = await handleUnblockEmail(request, env);
             
-            // ממשק מנהל לניהול משתמשים ו-SQL
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) response = await handleAdminLogin(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/users")) response = await handleAdminGetUsers(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/user-profile")) response = await handleAdminGetUserFullProfile(request, env);
@@ -180,14 +143,9 @@ export default {
 
             const isPlainText = response.headers && response.headers.get('Content-Type') === 'text/plain; charset=utf-8';
             let newResponse = isPlainText ? response : new Response(response.body, response);
-            
-            for (let [key, value] of Object.entries(corsHeaders)) {
-                newResponse.headers.set(key, value);
-            }
+            for (let [key, value] of Object.entries(corsHeaders)) newResponse.headers.set(key, value);
             return newResponse;
 
-        } catch (error) {
-            return Response.json({ error: error.message }, { status: 500, headers: corsHeaders });
-        }
+        } catch (error) { return Response.json({ error: error.message }, { status: 500, headers: corsHeaders }); }
     }
 };
