@@ -46,6 +46,20 @@ import { handleGetListenStats } from './listenStats.js';
 import { handlePhoneApiStats } from './phoneApi.js';
 import { handleGetSystemStats } from './stats.js';
 
+// ---- ייבוא הצ'אט החדש ----
+import {
+    handleUserGetChat,
+    handleUserSendMessage,
+    handleUserMarkRead,
+    handleUserDeleteMessage,
+    handleAdminGetConversations,
+    handleAdminGetChat,
+    handleAdminSendMessage,
+    handleAdminMarkRead,
+    handleAdminDeleteMessage as handleAdminDeleteChatMessage
+} from './chat.js';
+// -----------------------
+
 export default {
     async fetch(request, env, ctx) {
         const corsHeaders = {
@@ -161,6 +175,37 @@ export default {
                     const result = await verifySystem.verifyCode(body.sessionId, body.phone, userIp, body.code);
                     response = Response.json(result, { status: result.success ? 200 : 400 });
                 }
+            }
+
+            // ============================================
+            // צ'אט עם ההנהלה
+            // ============================================
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/list")) {
+                response = await handleUserGetChat(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) {
+                response = await handleUserSendMessage(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/read")) {
+                response = await handleUserMarkRead(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/delete")) {
+                response = await handleUserDeleteMessage(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/conversations")) {
+                response = await handleAdminGetConversations(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/list")) {
+                response = await handleAdminGetChat(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/send")) {
+                response = await handleAdminSendMessage(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/read")) {
+                response = await handleAdminMarkRead(request, env);
+            }
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/delete")) {
+                response = await handleAdminDeleteChatMessage(request, env);
             }
 
             // ============================================
