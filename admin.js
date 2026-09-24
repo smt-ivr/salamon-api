@@ -139,7 +139,6 @@ export async function handleAdminGetUsers(request, env) {
     } catch (e) { return Response.json({ error: "שגיאה בשליפת המשתמשים: " + e.message }, { status: 500 }); }
 }
 
-// הפונקציה החדשה: מסנכרנת רק מנויים קיימים מימות המשיח בצורה מסודרת
 export async function handleAdminGetYemotNamesList(request, env) {
     const body = await request.json().catch(() => ({}));
     if (!(await verifyAdmin(env, body, 'manage_names')) && !(await verifyAdmin(env, body, 'manage_users'))) {
@@ -152,14 +151,23 @@ export async function handleAdminGetYemotNamesList(request, env) {
             getAllNamesFromIni(env.YEMOT_TOKEN)
         ]);
 
+        let protectedPhones = [];
+        
         const dbProtected = await env.DB.prepare("SELECT phone FROM users WHERE is_protected = 1").all();
-        const protectedSet = new Set(dbProtected.results?.map(r => r.phone) || []);
+        if (dbProtected.results) protectedPhones.push(...dbProtected.results.map(r => r.phone));
+        
+        try {
+            const extraProtected = await env.DB.prepare("SELECT phone FROM protected_numbers").all();
+            if (extraProtected.results) protectedPhones.push(...extraProtected.results.map(r => r.phone));
+        } catch (e) {}
+
+        const protectedSet = new Set(protectedPhones);
         const isMainAdmin = await isPrimaryAdmin(env, body);
 
         const list = yemotUsers.map(u => ({
             phone: u.phone,
             active: u.active,
-            name: namesMap[u.phone] || "", // מחרוזת ריקה אם אין שם
+            name: namesMap[u.phone] || "",
             isProtected: protectedSet.has(u.phone)
         }));
 
@@ -254,8 +262,19 @@ export async function handleAdminUpdateYemotName(request, env) {
 
     try {
         const isMainAdmin = await isPrimaryAdmin(env, body);
+        let isProtected = false;
+        
         const user = await env.DB.prepare("SELECT is_protected FROM users WHERE phone = ?").bind(phone).first();
-        if (user && user.is_protected === 1 && !isMainAdmin) {
+        if (user && user.is_protected === 1) isProtected = true;
+
+        if (!isProtected) {
+            try {
+                const extraCheck = await env.DB.prepare("SELECT 1 FROM protected_numbers WHERE phone = ?").bind(phone).first();
+                if (extraCheck) isProtected = true;
+            } catch(e) {}
+        }
+
+        if (isProtected && !isMainAdmin) {
             return Response.json({ error: "פעולה חסומה: משתמש זה מוגן מעריכה. רק מנהל ראשי רשאי לעדכן את שמו." }, { status: 403 });
         }
 
