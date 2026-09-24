@@ -3,21 +3,19 @@ import { checkPhoneStatus, getAllYemotUsers, getAllNamesFromIni, updateNameInIni
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
 import { authenticateUser } from './auth.js';
 
+// בדיקת הרשאות למנהלי משנה
 async function verifyAdmin(env, body, requiredPermission = null) {
     if (body.adminToken && typeof body.adminToken === 'string' && body.adminToken.includes(':')) {
         const [username, password] = body.adminToken.split(':');
         const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
         if (admin) return true;
     }
-
     if (body.userToken) {
         const user = await authenticateUser(env.DB, body.userToken);
         if (user && user.is_admin === 1) {
             if (requiredPermission && user.admin_permissions) {
                 const perms = user.admin_permissions.split(',');
-                if (perms.includes('all') || perms.includes(requiredPermission)) {
-                    return true;
-                }
+                if (perms.includes('all') || perms.includes(requiredPermission)) return true;
                 return false;
             }
             return true;
@@ -26,6 +24,7 @@ async function verifyAdmin(env, body, requiredPermission = null) {
     return false;
 }
 
+// בדיקה האם זה המנהל הראשי (קוד מנהל)
 async function isPrimaryAdmin(env, body) {
     if (body.adminToken && typeof body.adminToken === 'string' && body.adminToken.includes(':')) {
         const [username, password] = body.adminToken.split(':');
@@ -35,6 +34,7 @@ async function isPrimaryAdmin(env, body) {
     return false;
 }
 
+// קבלת מזהה המנהל המבצע לצורך רישום בלוגים
 async function getPerformingAdminPhone(env, body) {
     if (body.userToken) {
         const user = await authenticateUser(env.DB, body.userToken);
@@ -43,6 +43,7 @@ async function getPerformingAdminPhone(env, body) {
     return 'primary_admin';
 }
 
+// פונקציה לרישום לוג פעולות ניהול
 async function logAdminAction(env, adminPhone, actionType, targetPhone, detailsBefore, detailsAfter) {
     const now = getIsraelTimeForDB();
     await env.DB.prepare(
@@ -90,7 +91,7 @@ export async function handleAdminGetUsers(request, env) {
 
     try {
         const [dbUsersRes, yemotUsers, namesMap] = await Promise.all([
-            env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, is_admin, admin_permissions FROM users").all(),
+            env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, is_admin, admin_permissions, is_protected FROM users").all(),
             getAllYemotUsers(env.YEMOT_TOKEN),
             getAllNamesFromIni(env.YEMOT_TOKEN)
         ]);
@@ -111,7 +112,8 @@ export async function handleAdminGetUsers(request, env) {
                 canListen: dbUser ? dbUser.can_listen !== 0 : true, listenWhitelist: dbUser ? (dbUser.listen_whitelist || "") : "",
                 listenBlacklist: dbUser ? (dbUser.listen_blacklist || "") : "", profilePictureUrl: dbUser ? (dbUser.profile_picture_url || "") : "",
                 lockProfilePicture: dbUser ? dbUser.lock_profile_picture === 1 : false, isAdmin: dbUser ? dbUser.is_admin === 1 : false,
-                adminPermissions: dbUser ? (dbUser.admin_permissions || "") : "", createdAt: dbUser ? dbUser.created_at : null
+                adminPermissions: dbUser ? (dbUser.admin_permissions || "") : "", isProtected: dbUser ? dbUser.is_protected === 1 : false,
+                createdAt: dbUser ? dbUser.created_at : null
             });
         }
 
@@ -122,7 +124,8 @@ export async function handleAdminGetUsers(request, env) {
                     email: du.email, canUpload: !!du.can_upload, canRecord: du.can_record !== 0, canTzintuk: du.can_tzintuk !== 0,
                     canListen: du.can_listen !== 0, listenWhitelist: du.listen_whitelist || "", listenBlacklist: du.listen_blacklist || "",
                     profilePictureUrl: du.profile_picture_url || "", lockProfilePicture: du.lock_profile_picture === 1,
-                    isAdmin: du.is_admin === 1, adminPermissions: du.admin_permissions || "", createdAt: du.created_at
+                    isAdmin: du.is_admin === 1, adminPermissions: du.admin_permissions || "", isProtected: du.is_protected === 1,
+                    createdAt: du.created_at
                 });
             }
         }
@@ -151,7 +154,7 @@ export async function handleAdminUpdateUser(request, env) {
     const body = await request.json().catch(() => ({}));
     if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
-    const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, profilePictureUrl, lockProfilePicture, isAdmin, adminPermissions } = body;
+    const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, profilePictureUrl, lockProfilePicture, isAdmin, adminPermissions, isProtected } = body;
     if (!phone) return Response.json({ error: "חובה לציין מספר טלפון של המשתמש לעדכון" }, { status: 400 });
 
     try {
@@ -159,8 +162,15 @@ export async function handleAdminUpdateUser(request, env) {
         if (!user) return Response.json({ error: "המשתמש שביקשת לעדכן לא נמצא" }, { status: 404 });
 
         const isMainAdmin = await isPrimaryAdmin(env, body);
+        
+        // הגנת משתמשים - חסימת עריכה מתת-מנהלים
+        if (!isMainAdmin && user.is_protected === 1) {
+            return Response.json({ error: "משתמש זה מוגן משינויים. רק מנהל ראשי רשאי לערוך אותו." }, { status: 403 });
+        }
+
         const intentIsAdmin = isAdmin === undefined ? (user.is_admin ?? 0) : (isAdmin ? 1 : 0);
         const intentAdminPerms = adminPermissions === undefined ? (user.admin_permissions || "") : adminPermissions;
+        const finalIsProtected = isMainAdmin && isProtected !== undefined ? (isProtected ? 1 : 0) : (user.is_protected ?? 0);
 
         if (!isMainAdmin && (intentIsAdmin !== (user.is_admin ?? 0) || intentAdminPerms !== (user.admin_permissions || ""))) {
             return Response.json({ error: "פעולה חסומה: רק מנהל ראשי רשאי לשנות הרשאות ניהול." }, { status: 403 });
@@ -183,10 +193,9 @@ export async function handleAdminUpdateUser(request, env) {
         const afterData = { email: finalEmail, can_listen: f_listen, can_upload: f_upload, can_record: f_record, can_tzintuk: f_tzintuk };
 
         await env.DB.prepare(
-            `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=?, can_listen=?, listen_whitelist=?, listen_blacklist=?, profile_picture_url=?, lock_profile_picture=?, is_admin=?, admin_permissions=? WHERE phone=?`
-        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, f_picture, f_lockPic, intentIsAdmin, intentAdminPerms, phone).run();
+            `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=?, can_listen=?, listen_whitelist=?, listen_blacklist=?, profile_picture_url=?, lock_profile_picture=?, is_admin=?, admin_permissions=?, is_protected=? WHERE phone=?`
+        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, f_picture, f_lockPic, intentIsAdmin, intentAdminPerms, finalIsProtected, phone).run();
 
-        // שמירת הלוג אם בוצע על ידי מנהל-משנה
         if (!isMainAdmin) {
             const adminPhone = await getPerformingAdminPhone(env, body);
             await logAdminAction(env, adminPhone, 'UPDATE_USER', phone, beforeData, afterData);
@@ -198,20 +207,27 @@ export async function handleAdminUpdateUser(request, env) {
 
 export async function handleAdminUpdateYemotName(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_names'))) return Response.json({ error: "הרשאות חסרות לעדכון שמות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_names')) && !(await verifyAdmin(env, body, 'manage_users'))) {
+        return Response.json({ error: "הרשאות חסרות לעדכון שמות" }, { status: 403 });
+    }
 
     const { phone, newName } = body;
     if (!phone || !newName) return Response.json({ error: "חסר טלפון או שם" }, { status: 400 });
 
     try {
         const isMainAdmin = await isPrimaryAdmin(env, body);
+        const user = await env.DB.prepare("SELECT is_protected FROM users WHERE phone = ?").bind(phone).first();
+        if (user && user.is_protected === 1 && !isMainAdmin) {
+            return Response.json({ error: "משתמש זה מוגן. לא ניתן לעדכן את שמו." }, { status: 403 });
+        }
+
         const adminPhone = await getPerformingAdminPhone(env, body);
         const oldNameStr = (await getAllNamesFromIni(env.YEMOT_TOKEN))[phone] || "לא הוגדר בעבר";
 
         const result = await updateNameInIni(phone, newName, env.YEMOT_TOKEN);
         if (result.responseStatus === 'OK') {
             if (!isMainAdmin) await logAdminAction(env, adminPhone, 'UPDATE_NAME', phone, { name: oldNameStr }, { name: newName });
-            return Response.json({ success: true, message: "השם עודכן בהצלחה במערכת!" });
+            return Response.json({ success: true, message: "השם עודכן בהצלחה במערכת ימות המשיח!" });
         } else {
             return Response.json({ error: "נדחה על ידי השרת החיצוני." }, { status: 400 });
         }
@@ -221,7 +237,6 @@ export async function handleAdminUpdateYemotName(request, env) {
 export async function handleAdminDisconnectUserTokens(request, env) {
     const body = await request.json().catch(() => ({}));
     if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "לא מורשה" }, { status: 403 });
-
     const { phone, tokenId } = body;
     try {
         if (tokenId) {
@@ -238,25 +253,25 @@ export async function handleAdminCreateUser(request, env) {
     const body = await request.json().catch(() => ({}));
     if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "לא מורשה" }, { status: 403 });
 
-    const { phone, password, email, canRecord, canUpload, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, isAdmin, adminPermissions } = body;
+    const { phone, password, email, canRecord, canUpload, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, isAdmin, adminPermissions, isProtected } = body;
     if (!phone || !password) return Response.json({ error: "חובה לציין מספר טלפון וסיסמה" }, { status: 400 });
 
     const isMainAdmin = await isPrimaryAdmin(env, body);
-    if (!isMainAdmin && (isAdmin === true || (adminPermissions && adminPermissions.length > 0))) {
-        return Response.json({ error: "פעולה חסומה: רק מנהל ראשי רשאי ליצור משתמשים מנהלים." }, { status: 403 });
+    if (!isMainAdmin && (isAdmin === true || (adminPermissions && adminPermissions.length > 0) || isProtected === true)) {
+        return Response.json({ error: "פעולה חסומה: רק מנהל ראשי רשאי ליצור מנהלים או משתמשים מוגנים." }, { status: 403 });
     }
 
     try {
         const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
-        if (existingUser) return Response.json({ error: "למשתמש זה כבר קיים חשבון" }, { status: 400 });
+        if (existingUser) return Response.json({ error: "למשתמש זה כבר קיים חשבון באתר" }, { status: 400 });
 
         const finalEmail = email ? String(email).toLowerCase() : null;
         const nowIsraelStr = getIsraelTimeForDB();
 
         await env.DB.prepare(
-            `INSERT INTO users (phone, email, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, created_at, is_admin, admin_permissions) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, 0, ?, ?, ?)`
-        ).bind(phone, finalEmail, password, canRecord?1:0, canUpload?1:0, canTzintuk?1:0, receiveEmails?1:0, canListen?1:0, listenWhitelist||'', listenBlacklist||'', nowIsraelStr, isAdmin?1:0, adminPermissions||'').run();
+            `INSERT INTO users (phone, email, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, created_at, is_admin, admin_permissions, is_protected) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, 0, ?, ?, ?, ?)`
+        ).bind(phone, finalEmail, password, canRecord?1:0, canUpload?1:0, canTzintuk?1:0, receiveEmails?1:0, canListen?1:0, listenWhitelist||'', listenBlacklist||'', nowIsraelStr, isAdmin?1:0, adminPermissions||'', isProtected?1:0).run();
 
         if (!isMainAdmin) {
             const adminPhone = await getPerformingAdminPhone(env, body);
@@ -275,6 +290,12 @@ export async function handleAdminDeleteUser(request, env) {
 
     try {
         const isMainAdmin = await isPrimaryAdmin(env, body);
+        const user = await env.DB.prepare("SELECT is_protected FROM users WHERE phone = ?").bind(phone).first();
+        
+        if (user && user.is_protected === 1 && !isMainAdmin) {
+            return Response.json({ error: "משתמש זה מוגן ממחיקה. רק מנהל ראשי יכול למחוק אותו." }, { status: 403 });
+        }
+
         await env.DB.prepare("DELETE FROM user_tokens WHERE phone = ?").bind(phone).run();
         await env.DB.prepare("DELETE FROM users WHERE phone = ?").bind(phone).run();
         
