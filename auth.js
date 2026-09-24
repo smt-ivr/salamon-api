@@ -182,6 +182,8 @@ export async function handleGetProfile(request, env) {
             lockProfilePicture: user.lock_profile_picture === 1,
             authMethod: user.auth_method,
             tokenType: user.token_type,
+            isAdmin: user.is_admin === 1,
+            adminPermissions: user.admin_permissions || "",
             emailGloballyBlocked: emailGloballyBlocked
         }
     });
