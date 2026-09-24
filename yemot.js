@@ -70,3 +70,45 @@ export async function getAllNamesFromIni(token) {
     }
     return namesMap;
 }
+
+// פונקציה לעדכון שם בודד בקובץ השמות המרכזי בימות המשיח
+export async function updateNameInIni(phone, newName, token) {
+    const getUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=ivr2:/EnterID/EnterIDValName.ini`;
+    
+    try {
+        const response = await fetch(getUrl);
+        const data = await response.json();
+        
+        let newContents = "";
+        let found = false;
+        
+        if (data.responseStatus === 'OK' && data.contents) {
+            const lines = data.contents.split('\n');
+            const updatedLines = lines.map(line => {
+                const [linePhone] = line.split('=');
+                if (linePhone && linePhone.trim() === phone) {
+                    found = true;
+                    return `${phone}=${newName}`;
+                }
+                return line;
+            });
+            
+            if (!found) updatedLines.push(`${phone}=${newName}`);
+            newContents = updatedLines.join('\n');
+        } else {
+            newContents = `${phone}=${newName}`;
+        }
+        
+        const txtFormData = new FormData();
+        txtFormData.append('token', token);
+        txtFormData.append('what', 'ivr2:/EnterID/EnterIDValName.ini');
+        txtFormData.append('contents', newContents);
+
+        const uploadUrl = 'https://www.call2all.co.il/ym/api/UploadTextFile';
+        const uploadRes = await fetch(uploadUrl, { method: 'POST', body: txtFormData });
+        return await uploadRes.json();
+    } catch (e) {
+        console.error("שגיאה בעדכון השם:", e);
+        return { responseStatus: 'ERROR', message: e.message };
+    }
+}
