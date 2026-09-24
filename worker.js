@@ -1,6 +1,6 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
-import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs } from './admin.js';
+import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
@@ -132,6 +132,7 @@ export default {
             
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) response = await handleAdminLogin(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/users")) response = await handleAdminGetUsers(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/yemot-names")) response = await handleAdminGetYemotNamesList(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/user-profile")) response = await handleAdminGetUserFullProfile(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/update-user")) response = await handleAdminUpdateUser(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/update-yemot-name")) response = await handleAdminUpdateYemotName(request, env);
@@ -141,7 +142,6 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/sql/tables")) response = await handleAdminGetTables(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/sql/execute")) response = await handleAdminExecuteQuery(request, env);
             
-            // נתיבים חדשים להרשאות ולוגים:
             else if (request.method === "GET" && pathname.endsWith("/api/admin/permissions")) response = await handleAdminGetPermissions(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/audit-logs")) response = await handleAdminGetAuditLogs(request, env);
             
