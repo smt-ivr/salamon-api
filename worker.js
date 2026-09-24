@@ -1,6 +1,6 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
-import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName } from './admin.js';
+import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
@@ -140,6 +140,11 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/delete-user")) response = await handleAdminDeleteUser(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/sql/tables")) response = await handleAdminGetTables(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/sql/execute")) response = await handleAdminExecuteQuery(request, env);
+            
+            // נתיבים חדשים להרשאות ולוגים:
+            else if (request.method === "GET" && pathname.endsWith("/api/admin/permissions")) response = await handleAdminGetPermissions(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/audit-logs")) response = await handleAdminGetAuditLogs(request, env);
+            
             else response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
 
             const isPlainText = response.headers && response.headers.get('Content-Type') === 'text/plain; charset=utf-8';
