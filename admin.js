@@ -1,12 +1,32 @@
 // admin.js
-import { checkPhoneStatus, getAllYemotUsers, getAllNamesFromIni } from './yemot.js';
+import { checkPhoneStatus, getAllYemotUsers, getAllNamesFromIni, updateNameInIni } from './yemot.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
+import { authenticateUser } from './auth.js';
 
-async function verifyAdmin(env, adminToken) {
-    if (!adminToken || !adminToken.includes(':')) return false;
-    const [username, password] = adminToken.split(':');
-    const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
-    return !!admin;
+async function verifyAdmin(env, body, requiredPermission = null) {
+    // 1. תמיכה לאחור בטוקן מנהל הראשי
+    if (body.adminToken && typeof body.adminToken === 'string' && body.adminToken.includes(':')) {
+        const [username, password] = body.adminToken.split(':');
+        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
+        if (admin) return true;
+    }
+
+    // 2. תמיכה במשתמשים עם הרשאת ניהול מתקדמת
+    if (body.userToken) {
+        const user = await authenticateUser(env.DB, body.userToken);
+        if (user && user.is_admin === 1) {
+            if (requiredPermission && user.admin_permissions) {
+                const perms = user.admin_permissions.split(',');
+                if (perms.includes('all') || perms.includes(requiredPermission)) {
+                    return true;
+                }
+                return false;
+            }
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 export async function handleAdminLogin(request, env) {
@@ -20,11 +40,11 @@ export async function handleAdminLogin(request, env) {
 
 export async function handleAdminGetUsers(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות או חסרה הרשאה" }, { status: 403 });
 
     try {
         const [dbUsersRes, yemotUsers, namesMap] = await Promise.all([
-            env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture FROM users").all(),
+            env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, is_admin, admin_permissions FROM users").all(),
             getAllYemotUsers(env.YEMOT_TOKEN),
             getAllNamesFromIni(env.YEMOT_TOKEN)
         ]);
@@ -52,6 +72,8 @@ export async function handleAdminGetUsers(request, env) {
                 listenBlacklist: dbUser ? (dbUser.listen_blacklist || "") : "",
                 profilePictureUrl: dbUser ? (dbUser.profile_picture_url || "") : "",
                 lockProfilePicture: dbUser ? dbUser.lock_profile_picture === 1 : false,
+                isAdmin: dbUser ? dbUser.is_admin === 1 : false,
+                adminPermissions: dbUser ? (dbUser.admin_permissions || "") : "",
                 createdAt: dbUser ? dbUser.created_at : null
             });
         }
@@ -72,6 +94,8 @@ export async function handleAdminGetUsers(request, env) {
                     listenBlacklist: du.listen_blacklist || "",
                     profilePictureUrl: du.profile_picture_url || "",
                     lockProfilePicture: du.lock_profile_picture === 1,
+                    isAdmin: du.is_admin === 1,
+                    adminPermissions: du.admin_permissions || "",
                     createdAt: du.created_at
                 });
             }
@@ -82,13 +106,12 @@ export async function handleAdminGetUsers(request, env) {
 
 export async function handleAdminGetUserFullProfile(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
     const phone = body.phone;
     if (!phone) return Response.json({ error: "חובה לשלוח מספר טלפון" }, { status: 400 });
 
     try {
         const userDb = await env.DB.prepare("SELECT * FROM users WHERE phone = ?").bind(phone).first();
-        // הוספתי סינון לטוקני מאסטר כך שלא יופיעו בממשק ויישארו בלתי נראים (AND token_type != 'master')
         const tokens = await env.DB.prepare("SELECT id, token_type, created_at, expires_at, last_used_at, session_email FROM user_tokens WHERE phone = ? AND token_type != 'master' ORDER BY last_used_at DESC").bind(phone).all();
         const blocks = await env.DB.prepare("SELECT * FROM verification_blocks WHERE block_type = 'phone' AND block_value = ?").bind(phone).all();
         const yemotStatus = await checkPhoneStatus(phone, env.YEMOT_TOKEN);
@@ -108,9 +131,9 @@ export async function handleAdminGetUserFullProfile(request, env) {
 
 export async function handleAdminUpdateUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
-    const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, profilePictureUrl, lockProfilePicture } = body;
+    const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, profilePictureUrl, lockProfilePicture, isAdmin, adminPermissions } = body;
     if (!phone) return Response.json({ error: "חובה לציין מספר טלפון של המשתמש לעדכון" }, { status: 400 });
 
     try {
@@ -129,10 +152,12 @@ export async function handleAdminUpdateUser(request, env) {
         const f_blacklist = listenBlacklist === undefined ? (user.listen_blacklist || "") : listenBlacklist;
         const f_picture = profilePictureUrl === undefined ? user.profile_picture_url : profilePictureUrl;
         const f_lockPic = lockProfilePicture === undefined ? (user.lock_profile_picture ?? 0) : (lockProfilePicture ? 1 : 0);
+        const f_isAdmin = isAdmin === undefined ? (user.is_admin ?? 0) : (isAdmin ? 1 : 0);
+        const f_adminPerms = adminPermissions === undefined ? (user.admin_permissions || "") : adminPermissions;
 
         await env.DB.prepare(
-            `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=?, can_listen=?, listen_whitelist=?, listen_blacklist=?, profile_picture_url=?, lock_profile_picture=? WHERE phone=?`
-        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, f_picture, f_lockPic, phone).run();
+            `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=?, can_listen=?, listen_whitelist=?, listen_blacklist=?, profile_picture_url=?, lock_profile_picture=?, is_admin=?, admin_permissions=? WHERE phone=?`
+        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, f_picture, f_lockPic, f_isAdmin, f_adminPerms, phone).run();
 
         return Response.json({ success: true, message: "נתוני המשתמש והרשאותיו עודכנו בהצלחה" });
     } catch (e) { return Response.json({ error: "שגיאה בעדכון המשתמש: " + e.message }, { status: 500 }); }
@@ -140,7 +165,7 @@ export async function handleAdminUpdateUser(request, env) {
 
 export async function handleAdminDisconnectUserTokens(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
     const { phone, tokenId } = body;
     if (!phone) return Response.json({ error: "חובה לציין מספר טלפון" }, { status: 400 });
@@ -158,9 +183,9 @@ export async function handleAdminDisconnectUserTokens(request, env) {
 
 export async function handleAdminCreateUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
-    const { phone, password, email, canRecord, canUpload, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist } = body;
+    const { phone, password, email, canRecord, canUpload, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, isAdmin, adminPermissions } = body;
     if (!phone || !password) return Response.json({ error: "חובה לציין מספר טלפון וסיסמה" }, { status: 400 });
 
     try {
@@ -176,12 +201,14 @@ export async function handleAdminCreateUser(request, env) {
         const f_listen = canListen !== undefined ? (canListen ? 1 : 0) : 1;
         const f_whitelist = listenWhitelist || "";
         const f_blacklist = listenBlacklist || "";
+        const f_isAdmin = isAdmin ? 1 : 0;
+        const f_adminPerms = adminPermissions || "";
 
         const nowIsraelStr = getIsraelTimeForDB();
         await env.DB.prepare(
-            `INSERT INTO users (phone, email, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, created_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)`
-        ).bind(phone, finalEmail, password, f_record, f_upload, f_tzintuk, f_receive, f_google, f_listen, f_whitelist, f_blacklist, nowIsraelStr).run();
+            `INSERT INTO users (phone, email, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, created_at, is_admin, admin_permissions) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)`
+        ).bind(phone, finalEmail, password, f_record, f_upload, f_tzintuk, f_receive, f_google, f_listen, f_whitelist, f_blacklist, nowIsraelStr, f_isAdmin, f_adminPerms).run();
 
         return Response.json({ success: true, message: "החשבון נוצר בהצלחה!" });
     } catch (e) { return Response.json({ error: "שגיאה ביצירת החשבון: " + e.message }, { status: 500 }); }
@@ -189,7 +216,7 @@ export async function handleAdminCreateUser(request, env) {
 
 export async function handleAdminDeleteUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
 
     const { phone } = body;
     if (!phone) return Response.json({ error: "חובה לציין מספר טלפון" }, { status: 400 });
@@ -201,12 +228,9 @@ export async function handleAdminDeleteUser(request, env) {
     } catch (e) { return Response.json({ error: "שגיאה במחיקת החשבון: " + e.message }, { status: 500 }); }
 }
 
-// ---------------------------------------------------------
-// מסד נתונים ישיר - שליפת טבלאות ושאילתות חופשיות
-// ---------------------------------------------------------
 export async function handleAdminGetTables(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_system'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
     
     try {
         const { tableName } = body;
@@ -224,7 +248,7 @@ export async function handleAdminGetTables(request, env) {
 
 export async function handleAdminExecuteQuery(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body.adminToken))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    if (!(await verifyAdmin(env, body, 'manage_system'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
     
     try {
         if (!body.query) return Response.json({ error: "שאילתה ריקה" }, { status: 400 });
@@ -232,5 +256,29 @@ export async function handleAdminExecuteQuery(request, env) {
         return Response.json({ success: true, results: data.results, meta: data.meta });
     } catch (e) {
         return Response.json({ error: e.message }, { status: 500 });
+    }
+}
+
+export async function handleAdminUpdateYemotName(request, env) {
+    const body = await request.json().catch(() => ({}));
+    
+    if (!(await verifyAdmin(env, body, 'manage_users'))) {
+        return Response.json({ error: "הרשאות מנהל לא חוקיות או שחסרה הרשאה ספציפית לעדכון משתמשים" }, { status: 403 });
+    }
+
+    const { phone, newName } = body;
+    if (!phone || !newName) {
+        return Response.json({ error: "חובה לציין מספר טלפון ושם חדש לעדכון" }, { status: 400 });
+    }
+
+    try {
+        const result = await updateNameInIni(phone, newName, env.YEMOT_TOKEN);
+        if (result.responseStatus === 'OK') {
+            return Response.json({ success: true, message: "השם עודכן בהצלחה במערכת ימות המשיח!" });
+        } else {
+            return Response.json({ error: "פעולת העדכון נדחתה על ידי השרת החיצוני." }, { status: 400 });
+        }
+    } catch (e) {
+        return Response.json({ error: "שגיאה בביצוע הפעולה מול השרת: " + e.message }, { status: 500 });
     }
 }
