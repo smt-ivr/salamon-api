@@ -92,7 +92,6 @@ export async function handleAdminGetUsers(request, env) {
     }
 
     try {
-        // שליפה מקבילית ויעילה של כלל הנתונים הדרושים
         const [dbUsersRes, yemotUsers, namesMap] = await Promise.all([
             env.DB.prepare("SELECT phone, email, can_upload, can_record, can_tzintuk, created_at, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, is_admin, admin_permissions, is_protected FROM users").all(),
             getAllYemotUsers(env.YEMOT_TOKEN),
@@ -107,7 +106,6 @@ export async function handleAdminGetUsers(request, env) {
         const mergedUsers = [];
         const processedPhones = new Set();
 
-        // 1. מיזוג כל המשתמשים שקיימים ברשימת ימות המשיח
         for (const yu of yemotUsers) {
             const phone = yu.phone;
             if (!phone) continue;
@@ -116,57 +114,58 @@ export async function handleAdminGetUsers(request, env) {
             const dbUser = dbUsersMap[phone];
             
             mergedUsers.push({
-                phone: phone, 
-                name: namesMap[phone] || "לא הוגדר (בימות)", 
-                hasWebAccount: !!dbUser, 
-                yemotActive: yu.active,
-                email: dbUser?.email || null, 
-                canUpload: !!dbUser?.can_upload,
-                canRecord: dbUser?.can_record !== 0, 
-                canTzintuk: dbUser?.can_tzintuk !== 0,
-                canListen: dbUser?.can_listen !== 0, 
-                listenWhitelist: dbUser?.listen_whitelist || "",
-                listenBlacklist: dbUser?.listen_blacklist || "", 
-                profilePictureUrl: dbUser?.profile_picture_url || "",
-                lockProfilePicture: dbUser?.lock_profile_picture === 1, 
-                isAdmin: dbUser?.is_admin === 1,
-                adminPermissions: dbUser?.admin_permissions || "", 
-                isProtected: dbUser?.is_protected === 1, // סימון האם המשתמש מוגן מעריכה
-                createdAt: dbUser?.created_at || null
+                phone: phone, name: namesMap[phone] || "לא הוגדר (בימות)", hasWebAccount: !!dbUser, yemotActive: yu.active,
+                email: dbUser?.email || null, canUpload: !!dbUser?.can_upload, canRecord: dbUser?.can_record !== 0, canTzintuk: dbUser?.can_tzintuk !== 0,
+                canListen: dbUser?.can_listen !== 0, listenWhitelist: dbUser?.listen_whitelist || "", listenBlacklist: dbUser?.listen_blacklist || "", 
+                profilePictureUrl: dbUser?.profile_picture_url || "", lockProfilePicture: dbUser?.lock_profile_picture === 1, 
+                isAdmin: dbUser?.is_admin === 1, adminPermissions: dbUser?.admin_permissions || "", isProtected: dbUser?.is_protected === 1, createdAt: dbUser?.created_at || null
             });
         }
 
-        // 2. השלמת משתמשים שקיימים באתר אך חסרים ברשימה של ימות
         if (dbUsersRes && dbUsersRes.results) {
             for (const du of dbUsersRes.results) {
                 if (!processedPhones.has(du.phone)) {
                     mergedUsers.push({
-                        phone: du.phone, 
-                        name: namesMap[du.phone] || "משתמש חסר בימות", 
-                        hasWebAccount: true, 
-                        yemotActive: false,
-                        email: du.email, 
-                        canUpload: !!du.can_upload, 
-                        canRecord: du.can_record !== 0, 
-                        canTzintuk: du.can_tzintuk !== 0,
-                        canListen: du.can_listen !== 0, 
-                        listenWhitelist: du.listen_whitelist || "", 
-                        listenBlacklist: du.listen_blacklist || "",
-                        profilePictureUrl: du.profile_picture_url || "", 
-                        lockProfilePicture: du.lock_profile_picture === 1,
-                        isAdmin: du.is_admin === 1, 
-                        adminPermissions: du.admin_permissions || "", 
-                        isProtected: du.is_protected === 1,
-                        createdAt: du.created_at
+                        phone: du.phone, name: namesMap[du.phone] || "משתמש חסר בימות", hasWebAccount: true, yemotActive: false,
+                        email: du.email, canUpload: !!du.can_upload, canRecord: du.can_record !== 0, canTzintuk: du.can_tzintuk !== 0,
+                        canListen: du.can_listen !== 0, listenWhitelist: du.listen_whitelist || "", listenBlacklist: du.listen_blacklist || "",
+                        profilePictureUrl: du.profile_picture_url || "", lockProfilePicture: du.lock_profile_picture === 1,
+                        isAdmin: du.is_admin === 1, adminPermissions: du.admin_permissions || "", isProtected: du.is_protected === 1, createdAt: du.created_at
                     });
                 }
             }
         }
-        
         return Response.json({ success: true, users: mergedUsers });
-    } catch (e) { 
-        console.error("Error fetching users:", e);
-        return Response.json({ error: "שגיאה בשליפת המשתמשים: " + e.message }, { status: 500 }); 
+    } catch (e) { return Response.json({ error: "שגיאה בשליפת המשתמשים: " + e.message }, { status: 500 }); }
+}
+
+// הפונקציה החדשה: מסנכרנת רק מנויים קיימים מימות המשיח בצורה מסודרת
+export async function handleAdminGetYemotNamesList(request, env) {
+    const body = await request.json().catch(() => ({}));
+    if (!(await verifyAdmin(env, body, 'manage_names')) && !(await verifyAdmin(env, body, 'manage_users'))) {
+        return Response.json({ error: "פעולה חסומה: חסרות הרשאות לעדכון שמות." }, { status: 403 });
+    }
+
+    try {
+        const [yemotUsers, namesMap] = await Promise.all([
+            getAllYemotUsers(env.YEMOT_TOKEN),
+            getAllNamesFromIni(env.YEMOT_TOKEN)
+        ]);
+
+        const dbProtected = await env.DB.prepare("SELECT phone FROM users WHERE is_protected = 1").all();
+        const protectedSet = new Set(dbProtected.results?.map(r => r.phone) || []);
+        const isMainAdmin = await isPrimaryAdmin(env, body);
+
+        const list = yemotUsers.map(u => ({
+            phone: u.phone,
+            active: u.active,
+            name: namesMap[u.phone] || "", // מחרוזת ריקה אם אין שם
+            isProtected: protectedSet.has(u.phone)
+        }));
+
+        return Response.json({ success: true, list, isMainAdmin });
+    } catch (e) {
+        return Response.json({ error: "שגיאה בשליפת הנתונים: " + e.message }, { status: 500 });
     }
 }
 
@@ -181,7 +180,7 @@ export async function handleAdminGetUserFullProfile(request, env) {
         const tokens = await env.DB.prepare("SELECT id, token_type, created_at, expires_at, last_used_at, session_email FROM user_tokens WHERE phone = ? AND token_type != 'master' ORDER BY last_used_at DESC").bind(phone).all();
         const blocks = await env.DB.prepare("SELECT * FROM verification_blocks WHERE block_type = 'phone' AND block_value = ?").bind(phone).all();
         const yemotStatus = await checkPhoneStatus(phone, env.YEMOT_TOKEN);
-        const name = await getNameFromIni(phone, env.YEMOT_TOKEN) || null; // אופטימיזציה לשליפת שם בודד
+        const name = await getNameFromIni(phone, env.YEMOT_TOKEN) || null;
 
         return Response.json({ success: true, profile: { user: userDb || null, yemot: { exists: yemotStatus.exists, active: yemotStatus.active, name: name }, activeSessions: tokens.results, blocks: blocks.results } });
     } catch (e) { return Response.json({ error: "שגיאה בשליפת נתוני הפרופיל: " + e.message }, { status: 500 }); }
@@ -200,7 +199,6 @@ export async function handleAdminUpdateUser(request, env) {
 
         const isMainAdmin = await isPrimaryAdmin(env, body);
         
-        // הגנת משתמשים - חסימת עריכה מתת-מנהלים
         if (!isMainAdmin && user.is_protected === 1) {
             return Response.json({ error: "פעולה חסומה: משתמש זה מוגן משינויים. רק מנהל ראשי רשאי לערוך אותו." }, { status: 403 });
         }
@@ -250,22 +248,18 @@ export async function handleAdminUpdateYemotName(request, env) {
     }
 
     const { phone, newName } = body;
-    if (!phone || !newName) {
+    if (!phone || newName === undefined) {
         return Response.json({ error: "נתונים חסרים: חובה לספק מספר טלפון ושם חדש." }, { status: 400 });
     }
 
     try {
         const isMainAdmin = await isPrimaryAdmin(env, body);
-        
-        // בדיקת הגנת המשתמש ממסד הנתונים אליו הוא משויך
         const user = await env.DB.prepare("SELECT is_protected FROM users WHERE phone = ?").bind(phone).first();
         if (user && user.is_protected === 1 && !isMainAdmin) {
-            return Response.json({ error: "פעולה חסומה: משתמש זה מוגן מעריכה (is_protected). רק מנהל ראשי רשאי לעדכן את שמו." }, { status: 403 });
+            return Response.json({ error: "פעולה חסומה: משתמש זה מוגן מעריכה. רק מנהל ראשי רשאי לעדכן את שמו." }, { status: 403 });
         }
 
         const adminPhone = await getPerformingAdminPhone(env, body);
-        
-        // אופטימיזציה: שליפת שם בודד במקום להוריד את כל קובץ הרשימה
         const oldNameStr = await getNameFromIni(phone, env.YEMOT_TOKEN) || "לא הוגדר בעבר";
 
         if (oldNameStr === newName) {
@@ -282,10 +276,7 @@ export async function handleAdminUpdateYemotName(request, env) {
         } else {
             return Response.json({ error: "העדכון נדחה על ידי השרת החיצוני של ימות המשיח." }, { status: 400 });
         }
-    } catch (e) { 
-        console.error("Error updating Yemot name:", e);
-        return Response.json({ error: "שגיאת מערכת פנימית בעת עדכון השם." }, { status: 500 }); 
-    }
+    } catch (e) { return Response.json({ error: "שגיאת מערכת פנימית בעת עדכון השם." }, { status: 500 }); }
 }
 
 export async function handleAdminDisconnectUserTokens(request, env) {
