@@ -1,6 +1,6 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
-import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery } from './admin.js';
+import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
@@ -134,6 +134,7 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/users")) response = await handleAdminGetUsers(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/user-profile")) response = await handleAdminGetUserFullProfile(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/update-user")) response = await handleAdminUpdateUser(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/update-yemot-name")) response = await handleAdminUpdateYemotName(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/user-tokens/delete")) response = await handleAdminDisconnectUserTokens(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/create-user")) response = await handleAdminCreateUser(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/delete-user")) response = await handleAdminDeleteUser(request, env);
