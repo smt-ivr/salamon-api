@@ -29,6 +29,16 @@ async function verifyAdmin(env, body, requiredPermission = null) {
     return false;
 }
 
+// פונקציית אבטחה: בודקת אם מי שמבצע את הפעולה כרגע הוא מנהל ראשי (התחבר עם קוד מנהל)
+async function isPrimaryAdmin(env, body) {
+    if (body.adminToken && typeof body.adminToken === 'string' && body.adminToken.includes(':')) {
+        const [username, password] = body.adminToken.split(':');
+        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
+        return !!admin;
+    }
+    return false;
+}
+
 export async function handleAdminLogin(request, env) {
     const body = await request.json().catch(() => ({}));
     const { username, password } = body;
@@ -140,6 +150,15 @@ export async function handleAdminUpdateUser(request, env) {
         const user = await env.DB.prepare("SELECT * FROM users WHERE phone = ?").bind(phone).first();
         if (!user) return Response.json({ error: "המשתמש שביקשת לעדכן לא נמצא במסד הנתונים של האתר" }, { status: 404 });
 
+        // בדיקת אבטחה: האם מנסים לשנות הרשאות מנהל מבלי להיות מנהל ראשי
+        const isMainAdmin = await isPrimaryAdmin(env, body);
+        const intentIsAdmin = isAdmin === undefined ? (user.is_admin ?? 0) : (isAdmin ? 1 : 0);
+        const intentAdminPerms = adminPermissions === undefined ? (user.admin_permissions || "") : adminPermissions;
+
+        if (!isMainAdmin && (intentIsAdmin !== (user.is_admin ?? 0) || intentAdminPerms !== (user.admin_permissions || ""))) {
+            return Response.json({ error: "פעולה חסומה: רק מנהל ראשי (באמצעות קוד מנהל ראשי) רשאי לשנות או להעניק הרשאות ניהול למשתמשים." }, { status: 403 });
+        }
+
         const finalPassword = newPassword || user.password;
         const finalEmail = newEmail === undefined ? user.email : (newEmail ? String(newEmail).toLowerCase() : null); 
         const f_upload = canUpload === undefined ? user.can_upload : (canUpload ? 1 : 0);
@@ -152,12 +171,10 @@ export async function handleAdminUpdateUser(request, env) {
         const f_blacklist = listenBlacklist === undefined ? (user.listen_blacklist || "") : listenBlacklist;
         const f_picture = profilePictureUrl === undefined ? user.profile_picture_url : profilePictureUrl;
         const f_lockPic = lockProfilePicture === undefined ? (user.lock_profile_picture ?? 0) : (lockProfilePicture ? 1 : 0);
-        const f_isAdmin = isAdmin === undefined ? (user.is_admin ?? 0) : (isAdmin ? 1 : 0);
-        const f_adminPerms = adminPermissions === undefined ? (user.admin_permissions || "") : adminPermissions;
 
         await env.DB.prepare(
             `UPDATE users SET email=?, password=?, can_upload=?, can_record=?, can_tzintuk=?, receive_emails=?, google_login_only=?, can_listen=?, listen_whitelist=?, listen_blacklist=?, profile_picture_url=?, lock_profile_picture=?, is_admin=?, admin_permissions=? WHERE phone=?`
-        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, f_picture, f_lockPic, f_isAdmin, f_adminPerms, phone).run();
+        ).bind(finalEmail, finalPassword, f_upload, f_record, f_tzintuk, f_receive, f_googleOnly, f_listen, f_whitelist, f_blacklist, f_picture, f_lockPic, intentIsAdmin, intentAdminPerms, phone).run();
 
         return Response.json({ success: true, message: "נתוני המשתמש והרשאותיו עודכנו בהצלחה" });
     } catch (e) { return Response.json({ error: "שגיאה בעדכון המשתמש: " + e.message }, { status: 500 }); }
@@ -187,6 +204,12 @@ export async function handleAdminCreateUser(request, env) {
 
     const { phone, password, email, canRecord, canUpload, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, isAdmin, adminPermissions } = body;
     if (!phone || !password) return Response.json({ error: "חובה לציין מספר טלפון וסיסמה" }, { status: 400 });
+
+    // בדיקת אבטחה: יצירת משתמש מנהל חדש
+    const isMainAdmin = await isPrimaryAdmin(env, body);
+    if (!isMainAdmin && (isAdmin === true || (adminPermissions && adminPermissions.length > 0))) {
+        return Response.json({ error: "פעולה חסומה: רק מנהל ראשי רשאי ליצור משתמשים בעלי הרשאות ניהול." }, { status: 403 });
+    }
 
     try {
         const existingUser = await env.DB.prepare("SELECT 1 FROM users WHERE phone = ?").bind(phone).first();
