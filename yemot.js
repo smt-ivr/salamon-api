@@ -38,10 +38,11 @@ export async function getNameFromIni(phone, token) {
     
     if (data.responseStatus !== 'OK' || !data.contents) return null;
 
-    const lines = data.contents.split('\n');
+    // שימוש ב-Regex מפוצל כדי להתמודד עם שבירות שורה מסוגים שונים
+    const lines = data.contents.split(/\r?\n/);
     for (const line of lines) {
         const [linePhone, lineName] = line.split('=');
-        if (linePhone === phone && lineName) {
+        if (linePhone && linePhone.trim() === phone && lineName) {
             return lineName.trim();
         }
     }
@@ -57,7 +58,7 @@ export async function getAllNamesFromIni(token) {
         const data = await response.json();
         
         if (data.responseStatus === 'OK' && data.contents) {
-            const lines = data.contents.split('\n');
+            const lines = data.contents.split(/\r?\n/);
             for (const line of lines) {
                 const [phone, name] = line.split('=');
                 if (phone && name) {
@@ -83,9 +84,12 @@ export async function updateNameInIni(phone, newName, token) {
         let found = false;
         
         if (data.responseStatus === 'OK' && data.contents) {
-            const lines = data.contents.split('\n');
+            // התמודדות עם שבירות שורות שונות (Windows/Linux) כדי לא ליצור שורות ריקות בטעות
+            const lines = data.contents.split(/\r?\n/);
+            
             const updatedLines = lines.map(line => {
                 const [linePhone] = line.split('=');
+                // השוואה חכמה נטולת מרווחים
                 if (linePhone && linePhone.trim() === phone) {
                     found = true;
                     return `${phone}=${newName}`;
@@ -93,9 +97,19 @@ export async function updateNameInIni(phone, newName, token) {
                 return line;
             });
             
-            if (!found) updatedLines.push(`${phone}=${newName}`);
+            // אם המשתמש לא היה קיים בקובץ, נצרף אותו בסוף
+            if (!found) {
+                // בדיקה שהשורה האחרונה אינה ריקה לחלוטין כדי למנוע ירידת שורה מיותרת
+                if (updatedLines.length > 0 && updatedLines[updatedLines.length - 1].trim() === "") {
+                    updatedLines[updatedLines.length - 1] = `${phone}=${newName}`;
+                } else {
+                    updatedLines.push(`${phone}=${newName}`);
+                }
+            }
+            
             newContents = updatedLines.join('\n');
         } else {
+            // אם הקובץ לא היה קיים או שהתקבלה שגיאה בקריאה, צור מחדש
             newContents = `${phone}=${newName}`;
         }
         
@@ -108,7 +122,7 @@ export async function updateNameInIni(phone, newName, token) {
         const uploadRes = await fetch(uploadUrl, { method: 'POST', body: txtFormData });
         return await uploadRes.json();
     } catch (e) {
-        console.error("שגיאה בעדכון השם:", e);
+        console.error("שגיאה בעדכון השם בימות:", e);
         return { responseStatus: 'ERROR', message: e.message };
     }
 }
