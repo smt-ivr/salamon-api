@@ -58,6 +58,7 @@ export async function handleAdminGetPermissions(request, env) {
         { id: 'manage_chat', label: 'מענה בצ\'אט', desc: 'מענה לפניות של לקוחות דרך האתר' },
         { id: 'manage_ads', label: 'ניהול מודעות פופאפ', desc: 'הוספה והסרה של מודעות וקמפיינים' },
         { id: 'manage_system', label: 'מסוף נתונים ולוגים', desc: 'גישה למסוף SQL ולוגי אבטחה' },
+        { id: 'delete_messages', label: 'מחיקת הודעות', desc: 'הרשאה למחיקת קבצי שמע של משתמשים אחרים (בפיתוח)' },
         { id: 'all', label: 'מנהל-על (הכל)', desc: 'גישה מלאה לכל המודולים במערכת החכמה' }
     ];
     return Response.json({ success: true, permissions });
@@ -208,7 +209,7 @@ export async function handleAdminUpdateUser(request, env) {
         const isMainAdmin = await isPrimaryAdmin(env, body);
         
         if (!isMainAdmin && user.is_protected === 1) {
-            return Response.json({ error: "פעולה חסומה: משתמש זה מוגן משינויים. רק מנהל ראשי רשאי לערוך אותו." }, { status: 403 });
+            return Response.json({ error: "פעולה חסומה: משתמש זה מוגן משינויים. רק מנהל ראשי רשאי לערך אותו." }, { status: 403 });
         }
 
         const intentIsAdmin = isAdmin === undefined ? (user.is_admin ?? 0) : (isAdmin ? 1 : 0);
