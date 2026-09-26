@@ -3,25 +3,33 @@ import { checkPhoneStatus, getAllYemotUsers, getAllNamesFromIni, updateNameInIni
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
 import { authenticateUser } from './auth.js';
 
-// בדיקת הרשאות למנהלי משנה
-async function verifyAdmin(env, body, requiredPermission = null) {
+// בדיקת הרשאות למנהלי משנה (הפונקציה שודרגה להחזרת הודעות שגיאה מפורטות)
+async function verifyAdmin(env, body, requiredPermissions = null) {
     if (body.adminToken && typeof body.adminToken === 'string' && body.adminToken.includes(':')) {
         const [username, password] = body.adminToken.split(':');
         const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
-        if (admin) return true;
+        if (admin) return { authorized: true };
     }
     if (body.userToken) {
         const user = await authenticateUser(env.DB, body.userToken);
         if (user && user.is_admin === 1) {
-            if (requiredPermission && user.admin_permissions) {
-                const perms = user.admin_permissions.split(',');
-                if (perms.includes('all') || perms.includes(requiredPermission)) return true;
-                return false;
+            const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
+            
+            // בדיקת חובת גוגל: ההרשאה קיימת במשתמש, אך הפעולה בפועל נחסמת
+            if (perms.includes('require_google') && user.auth_method !== 'google' && user.auth_method !== 'master') {
+                return { authorized: false, error: "פעולה חסומה: יש להתחבר עם גוגל בלבד כדי לבצע פעולות ניהול." };
             }
-            return true;
+
+            if (requiredPermissions) {
+                const requiredArray = Array.isArray(requiredPermissions) ? requiredPermissions : [requiredPermissions];
+                const hasPerm = perms.includes('all') || requiredArray.some(p => perms.includes(p));
+                if (hasPerm) return { authorized: true };
+                return { authorized: false, error: "פעולה חסומה: אין לך את ההרשאות הנדרשות לביצוע פעולה זו." };
+            }
+            return { authorized: true };
         }
     }
-    return false;
+    return { authorized: false, error: "לא מורשה" };
 }
 
 // בדיקה האם זה המנהל הראשי (קוד מנהל)
@@ -58,7 +66,8 @@ export async function handleAdminGetPermissions(request, env) {
         { id: 'manage_chat', label: 'מענה בצ\'אט', desc: 'מענה לפניות של לקוחות דרך האתר' },
         { id: 'manage_ads', label: 'ניהול מודעות פופאפ', desc: 'הוספה והסרה של מודעות וקמפיינים' },
         { id: 'manage_system', label: 'מסוף נתונים ולוגים', desc: 'גישה למסוף SQL ולוגי אבטחה' },
-        { id: 'delete_messages', label: 'מחיקת הודעות', desc: 'הרשאה למחיקת קבצי שמע של משתמשים אחרים (בפיתוח)' },
+        { id: 'delete_messages', label: 'מחיקת הודעות', desc: 'הרשאה למחיקת קבצי שמע של משתמשים אחרים' },
+        { id: 'require_google', label: 'חובת התחברות בגוגל (אבטחה)', desc: 'חוסם ביצוע פעולות ניהול למנהל זה אלא אם התחבר דרך חשבון גוגל' },
         { id: 'all', label: 'מנהל-על (הכל)', desc: 'גישה מלאה לכל המודולים במערכת החכמה' }
     ];
     return Response.json({ success: true, permissions });
@@ -88,9 +97,8 @@ export async function handleAdminLogin(request, env) {
 
 export async function handleAdminGetUsers(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_users'))) {
-        return Response.json({ error: "פעולה חסומה: נדרשת הרשאת ניהול משתמשים." }, { status: 403 });
-    }
+    const auth = await verifyAdmin(env, body, 'manage_users');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
 
     try {
         const [dbUsersRes, yemotUsers, namesMap] = await Promise.all([
@@ -142,9 +150,8 @@ export async function handleAdminGetUsers(request, env) {
 
 export async function handleAdminGetYemotNamesList(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_names')) && !(await verifyAdmin(env, body, 'manage_users'))) {
-        return Response.json({ error: "פעולה חסומה: חסרות הרשאות לעדכון שמות." }, { status: 403 });
-    }
+    const auth = await verifyAdmin(env, body, ['manage_names', 'manage_users']);
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
 
     try {
         const [yemotUsers, namesMap] = await Promise.all([
@@ -180,7 +187,9 @@ export async function handleAdminGetYemotNamesList(request, env) {
 
 export async function handleAdminGetUserFullProfile(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    const auth = await verifyAdmin(env, body, 'manage_users');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
+
     const phone = body.phone;
     if (!phone) return Response.json({ error: "חובה לשלוח מספר טלפון" }, { status: 400 });
 
@@ -197,7 +206,8 @@ export async function handleAdminGetUserFullProfile(request, env) {
 
 export async function handleAdminUpdateUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+    const auth = await verifyAdmin(env, body, 'manage_users');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
 
     const { phone, newEmail, newPassword, canUpload, canRecord, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, profilePictureUrl, lockProfilePicture, isAdmin, adminPermissions, isProtected } = body;
     if (!phone) return Response.json({ error: "חובה לציין מספר טלפון של המשתמש לעדכון" }, { status: 400 });
@@ -209,7 +219,7 @@ export async function handleAdminUpdateUser(request, env) {
         const isMainAdmin = await isPrimaryAdmin(env, body);
         
         if (!isMainAdmin && user.is_protected === 1) {
-            return Response.json({ error: "פעולה חסומה: משתמש זה מוגן משינויים. רק מנהל ראשי רשאי לערך אותו." }, { status: 403 });
+            return Response.json({ error: "פעולה חסומה: משתמש זה מוגן משינויים. רק מנהל ראשי רשאי לערוך אותו." }, { status: 403 });
         }
 
         const intentIsAdmin = isAdmin === undefined ? (user.is_admin ?? 0) : (isAdmin ? 1 : 0);
@@ -252,9 +262,8 @@ export async function handleAdminUpdateUser(request, env) {
 export async function handleAdminUpdateYemotName(request, env) {
     const body = await request.json().catch(() => ({}));
     
-    if (!(await verifyAdmin(env, body, 'manage_names')) && !(await verifyAdmin(env, body, 'manage_users'))) {
-        return Response.json({ error: "פעולה חסומה: חסרות הרשאות לעדכון שמות משתמשים." }, { status: 403 });
-    }
+    const auth = await verifyAdmin(env, body, ['manage_names', 'manage_users']);
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
 
     const { phone, newName } = body;
     if (!phone || newName === undefined) {
@@ -301,7 +310,9 @@ export async function handleAdminUpdateYemotName(request, env) {
 
 export async function handleAdminDisconnectUserTokens(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "לא מורשה" }, { status: 403 });
+    const auth = await verifyAdmin(env, body, 'manage_users');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
+
     const { phone, tokenId } = body;
     try {
         if (tokenId) {
@@ -316,7 +327,8 @@ export async function handleAdminDisconnectUserTokens(request, env) {
 
 export async function handleAdminCreateUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "לא מורשה" }, { status: 403 });
+    const auth = await verifyAdmin(env, body, 'manage_users');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
 
     const { phone, password, email, canRecord, canUpload, canTzintuk, receiveEmails, googleLoginOnly, canListen, listenWhitelist, listenBlacklist, isAdmin, adminPermissions, isProtected } = body;
     if (!phone || !password) return Response.json({ error: "חובה לציין מספר טלפון וסיסמה" }, { status: 400 });
@@ -348,7 +360,8 @@ export async function handleAdminCreateUser(request, env) {
 
 export async function handleAdminDeleteUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_users'))) return Response.json({ error: "לא מורשה" }, { status: 403 });
+    const auth = await verifyAdmin(env, body, 'manage_users');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
 
     const { phone } = body;
     if (!phone) return Response.json({ error: "חסר טלפון" }, { status: 400 });
@@ -374,7 +387,9 @@ export async function handleAdminDeleteUser(request, env) {
 
 export async function handleAdminGetTables(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_system'))) return Response.json({ error: "לא מורשה" }, { status: 403 });
+    const auth = await verifyAdmin(env, body, 'manage_system');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
+
     try {
         const { tableName } = body;
         if (tableName) {
@@ -389,7 +404,9 @@ export async function handleAdminGetTables(request, env) {
 
 export async function handleAdminExecuteQuery(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await verifyAdmin(env, body, 'manage_system'))) return Response.json({ error: "לא מורשה" }, { status: 403 });
+    const auth = await verifyAdmin(env, body, 'manage_system');
+    if (!auth.authorized) return Response.json({ error: auth.error }, { status: 403 });
+
     try {
         if (!body.query) return Response.json({ error: "שאילתה ריקה" }, { status: 400 });
         const data = await env.DB.prepare(body.query).all();
