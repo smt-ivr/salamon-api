@@ -5,13 +5,13 @@ import { authenticateUser } from './auth.js';
 const DELETE_WINDOW_HOURS = 12; 
 const FOLDER_PATH = 'ivr2:/1/2'; 
 
-async function checkEligibility(db, phone, fileName, isMaster) {
+async function checkEligibility(db, user, fileName) {
     if (!fileName || !fileName.match(/^\d+\.wav$/)) {
         return { allowed: false, message: "שם קובץ לא חוקי. ניתן למחוק קבצי שמע מסוג מספרי בלבד." };
     }
 
     // מאסטר עוקף את כל הגבלות המחיקה
-    if (isMaster) {
+    if (user.is_master) {
         return { allowed: true };
     }
 
@@ -26,7 +26,18 @@ async function checkEligibility(db, phone, fileName, isMaster) {
         };
     }
 
-    if (anyUpload.phone !== phone) {
+    if (anyUpload.phone !== user.phone) {
+        // הכנה למערכת המחיקה העתידית - חסימה למנהלים עם הודעת פיתוח
+        if (user.is_admin === 1) {
+            const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
+            if (perms.includes('all') || perms.includes('delete_messages')) {
+                return {
+                    allowed: false,
+                    message: "האפשרות למחיקת הודעות של משתמשים אחרים על ידי מנהל נמצאת כעת בפיתוח."
+                };
+            }
+        }
+        
         return { 
             allowed: false, 
             message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." 
@@ -35,7 +46,7 @@ async function checkEligibility(db, phone, fileName, isMaster) {
 
     const uploadRecord = await db.prepare(
         `SELECT upload_time, tzintuk_sent FROM upload_events WHERE phone = ? AND file_name = ?`
-    ).bind(phone, fileName).first();
+    ).bind(user.phone, fileName).first();
 
     if (uploadRecord.tzintuk_sent === 1) {
         return { allowed: false, message: " לא ניתן למחוק הודעה שנשלחה עליה צינתוק" };
@@ -57,7 +68,7 @@ export async function handleCheckDeleteEligibility(request, env) {
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ success: false, message: "אימות נכשל, התחבר מחדש." }, { status: 403 });
 
-    const eligibility = await checkEligibility(env.DB, user.phone, fileName, user.is_master);
+    const eligibility = await checkEligibility(env.DB, user, fileName);
     return Response.json({ success: eligibility.allowed, message: eligibility.message });
 }
 
@@ -69,7 +80,7 @@ export async function handleDeleteMessage(request, env, userIp) {
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ success: false, message: "אימות נכשל" }, { status: 403 });
 
-    const eligibility = await checkEligibility(env.DB, user.phone, fileName, user.is_master);
+    const eligibility = await checkEligibility(env.DB, user, fileName);
     if (!eligibility.allowed) {
         return Response.json({ success: false, message: eligibility.message });
     }
