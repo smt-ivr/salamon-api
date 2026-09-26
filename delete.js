@@ -19,15 +19,12 @@ async function checkEligibility(db, user, fileName) {
         `SELECT phone FROM upload_events WHERE file_name = ?`
     ).bind(fileName).first();
 
-    if (!anyUpload) {
-        return { 
-            allowed: false, 
-            message: "לא ניתן למחוק. ההודעה הוקלטה דרך הטלפון או לפני שדרוג המערכת." 
-        };
-    }
+    // בודקים אם הקובץ קיים ב-DB והאם הוא שייך למשתמש הנוכחי
+    const isOwnFile = anyUpload && anyUpload.phone === user.phone;
 
-    if (anyUpload.phone !== user.phone) {
-        // הכנה למערכת המחיקה העתידית - חסימה למנהלים עם הודעת פיתוח
+    // אם זה לא הקובץ שלו (או שהקובץ לא קיים במערכת)
+    if (!isOwnFile) {
+        // אם זה מנהל עם הרשאות - מציגים לו את הודעת הפיתוח
         if (user.is_admin === 1) {
             const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
             if (perms.includes('all') || perms.includes('delete_messages')) {
@@ -38,18 +35,27 @@ async function checkEligibility(db, user, fileName) {
             }
         }
         
-        return { 
-            allowed: false, 
-            message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." 
-        };
+        // אם זה סתם משתמש - נחזיר את השגיאה המתאימה
+        if (!anyUpload) {
+            return { 
+                allowed: false, 
+                message: "לא ניתן למחוק. ההודעה הוקלטה דרך הטלפון או לפני שדרוג המערכת." 
+            };
+        } else {
+            return { 
+                allowed: false, 
+                message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." 
+            };
+        }
     }
 
+    // מכאן והלאה: מדובר בוודאות בקובץ שהמשתמש עצמו העלה דרך האתר
     const uploadRecord = await db.prepare(
         `SELECT upload_time, tzintuk_sent FROM upload_events WHERE phone = ? AND file_name = ?`
     ).bind(user.phone, fileName).first();
 
     if (uploadRecord.tzintuk_sent === 1) {
-        return { allowed: false, message: " לא ניתן למחוק הודעה שנשלחה עליה צינתוק" };
+        return { allowed: false, message: "לא ניתן למחוק הודעה שנשלחה עליה צינתוק" };
     }
 
     const minutesPassed = getMinutesSinceIsraelDbTime(uploadRecord.upload_time);
@@ -107,7 +113,6 @@ export async function handleDeleteMessage(request, env, userIp) {
             const currentTimeIsrael = getIsraelTimeForDB();
             const safeIp = userIp || '0.0.0.0';
 
-            // מוחקים את הקובץ מטבלת ההעלאות לפי השם שלו, כדי שמאסטר יוכל למחוק קבצים של אחרים
             await env.DB.batch([
                 env.DB.prepare(`DELETE FROM upload_events WHERE file_name = ?`).bind(fileName),
                 env.DB.prepare(`INSERT INTO delete_logs (phone, ip_address, file_name, deleted_at) VALUES (?, ?, ?, ?)`).bind(user.phone, safeIp, fileName, currentTimeIsrael)
