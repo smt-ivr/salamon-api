@@ -2,12 +2,12 @@
 import { getMinutesSinceIsraelDbTime, getIsraelTimeForDB } from './timeUtils.js';
 import { authenticateUser } from './auth.js';
 
-const DELETE_WINDOW_HOURS = 12; // חלון מחיקה למשתמש רגיל
-const ADMIN_DELETE_WINDOW_DAYS = 7; // חלון מחיקה למנהלים (שבוע)
+const DELETE_WINDOW_HOURS = 12; // חלון מחיקה למשתמש רגיל או למחיקה עצמית
+const ADMIN_DELETE_WINDOW_DAYS = 7; // חלון מחיקה למנהלים על הודעות של אחרים (שבוע)
 const FOLDER_PATH = 'ivr2:/1/2'; 
 const DELETE_ARCHIVE_PATH = 'ivr2:/delete';
 
-// פונקציית עזר למשיכת נתוני קובץ שהוקלט ישירות בטלפון מתוך קובץ הטקסט בימות
+// פונקציית עזר למשיכת נתוני קובץ שהוקלט בטלפון ישירות מתוך קובץ הטקסט בימות
 async function getFileDetailsFromYemot(env, fileName) {
     const txtFileName = fileName.replace('.wav', '.txt');
     const txtPath = `${FOLDER_PATH}/${txtFileName}`;
@@ -20,16 +20,13 @@ async function getFileDetailsFromYemot(env, fileName) {
             let phone = null;
             let recordTime = null;
 
-            // חילוץ המספר
             const phoneMatch = data.contents.match(/Phone-(\d+)/);
             if (phoneMatch) phone = phoneMatch[1];
 
-            // חילוץ התאריך מפורמט YYYY-MM-DD-HH-MM-SS
             const dateMatch = data.contents.match(/Date-(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})/);
             if (dateMatch) {
                 const parts = dateMatch[1].split('-');
                 if (parts.length === 6) {
-                    // המרה לפורמט סטנדרטי למערכת YYYY-MM-DD HH:MM:SS
                     recordTime = `${parts[0]}-${parts[1]}-${parts[2]} ${parts[3]}:${parts[4]}:${parts[5]}`;
                 }
             }
@@ -47,17 +44,12 @@ async function checkEligibility(env, user, fileName) {
         return { allowed: false, message: "שם קובץ לא חוקי. ניתן לבצע פעולות על קבצי שמע מסוג מספרי בלבד." };
     }
 
-    // מאסטר עוקף את כל ההגבלות
-    if (user.is_master) {
-        return { allowed: true, isAdminDelete: true, uploaderPhone: "master_override" };
-    }
-
     let uploaderPhone = null;
     let uploadTime = null;
     let tzintukSent = 0;
     let isUploaderAdmin = 0;
 
-    // שליפת פרטי ההעלאה מהמסד המקומי יחד עם נתוני המשתמש
+    // שליפת פרטי ההעלאה מהמסד המקומי
     const uploaderRecord = await db.prepare(
         `SELECT u.phone, u.upload_time, u.tzintuk_sent, usr.is_admin 
          FROM upload_events u 
@@ -66,13 +58,12 @@ async function checkEligibility(env, user, fileName) {
     ).bind(fileName).first();
 
     if (uploaderRecord) {
-        // נמצא במסד הנתונים
         uploaderPhone = uploaderRecord.phone;
         uploadTime = uploaderRecord.upload_time;
         tzintukSent = uploaderRecord.tzintuk_sent;
         isUploaderAdmin = uploaderRecord.is_admin || 0;
     } else {
-        // הקובץ הוקלט בטלפון - נשלוף את נתוניו מימות המשיח
+        // במידה ולא נמצא במסד (הוקלט בטלפון), נשלוף מימות המשיח
         const yemotDetails = await getFileDetailsFromYemot(env, fileName);
         
         if (!yemotDetails || !yemotDetails.phone || !yemotDetails.recordTime) {
@@ -85,7 +76,6 @@ async function checkEligibility(env, user, fileName) {
         uploaderPhone = yemotDetails.phone;
         uploadTime = yemotDetails.recordTime;
 
-        // בדיקה האם המספר ששלפנו מהטלפון שייך למנהל
         const uploaderUser = await db.prepare("SELECT is_admin FROM users WHERE phone = ?").bind(uploaderPhone).first();
         if (uploaderUser) {
             isUploaderAdmin = uploaderUser.is_admin || 0;
@@ -94,11 +84,15 @@ async function checkEligibility(env, user, fileName) {
 
     const isOwnFile = (uploaderPhone === user.phone);
 
+    // מאסטר עוקף את הגבלות הזמן והחסימות. אם זה של מישהו אחר הוא גם יעביר לארכיון
+    if (user.is_master) {
+        return { allowed: true, isAdminDelete: !isOwnFile, uploaderPhone: uploaderPhone };
+    }
+
     // ==========================================
-    // לוגיקת מחיקה למנהלים (על הודעות של אחרים)
+    // לוגיקת פעולות הנהלה (פעולה על קובץ של משתמש אחר)
     // ==========================================
     if (!isOwnFile) {
-        
         if (user.is_admin !== 1) {
             return { allowed: false, message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." };
         }
@@ -108,13 +102,14 @@ async function checkEligibility(env, user, fileName) {
             return { allowed: false, message: "פעולה חסומה: חסרה לך הרשאת מחיקת הודעות." };
         }
 
+        // הגנת מנהלים חלה אך ורק כשמנהל מנסה למחוק הודעה *של מישהו אחר*
         if (isUploaderAdmin === 1) {
             return { allowed: false, message: "פעולה חסומה: לא ניתן למחוק הודעות של מנהלים אחרים במערכת." };
         }
 
         const minutesPassed = getMinutesSinceIsraelDbTime(uploadTime);
         if (minutesPassed > (ADMIN_DELETE_WINDOW_DAYS * 24 * 60) || minutesPassed < 0) {
-            return { allowed: false, message: `לא ניתן להעביר לארכיון: ההרשאה מאפשרת פעולה רק על הודעות שהוקלטו בשבוע האחרון.` };
+            return { allowed: false, message: "לא ניתן להעביר לארכיון: ההרשאה מאפשרת פעולה רק על הודעות שהוקלטו בשבוע האחרון." };
         }
 
         return { allowed: true, isAdminDelete: true, uploaderPhone: uploaderPhone };
@@ -143,7 +138,6 @@ export async function handleCheckDeleteEligibility(request, env) {
     const user = await authenticateUser(env.DB, userToken);
     if (!user) return Response.json({ success: false, message: "אימות נכשל, התחבר מחדש." }, { status: 403 });
 
-    // כאן אנחנו מעבירים גם את env כדי לאפשר תקשורת עם ימות
     const eligibility = await checkEligibility(env, user, fileName);
     return Response.json({ success: eligibility.allowed, message: eligibility.message });
 }
@@ -165,11 +159,11 @@ export async function handleDeleteMessage(request, env, userIp) {
     let yemotActionUrl = "";
 
     if (eligibility.isAdminDelete) {
-        // מנהל - העברה לארכיון באמצעות שינוי נתיב בימות המשיח
+        // מנהל - העברה לארכיון באמצעות פקודת move כפי שמופיע בתיעוד
         const targetPath = `${DELETE_ARCHIVE_PATH}/${fileName}`;
-        yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=rename&what=${encodeURIComponent(exactFilePath)}&target=${encodeURIComponent(targetPath)}`;
+        yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=move&what=${encodeURIComponent(exactFilePath)}&target=${encodeURIComponent(targetPath)}`;
     } else {
-        // מחיקה עצמית - מחיקה מוחלטת כרגיל
+        // מחיקה עצמית - מחיקה מוחלטת עם פקודת delete
         yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=delete&what=${encodeURIComponent(exactFilePath)}`;
     }
 
@@ -180,7 +174,8 @@ export async function handleDeleteMessage(request, env, userIp) {
         const res = await fetch(yemotActionUrl);
         const data = await res.json();
 
-        if (data.responseStatus === "OK") {
+        // בדיקת success על פי התיעוד ששלחת
+        if (data.success === true) {
             yemotSuccess = true;
         }
     } catch (err) {
@@ -197,7 +192,7 @@ export async function handleDeleteMessage(request, env, userIp) {
             ];
 
             if (eligibility.isAdminDelete) {
-                // לוג למנהל
+                // לוג מפורט למנהל ב- admin_audit_logs
                 const targetPhone = eligibility.uploaderPhone || 'unknown';
                 const beforeDetails = { file_name: fileName, original_folder: FOLDER_PATH };
                 const afterDetails = { status: 'moved_to_archive', new_folder: DELETE_ARCHIVE_PATH, performed_from_ip: safeIp };
@@ -208,7 +203,7 @@ export async function handleDeleteMessage(request, env, userIp) {
                     ).bind(user.phone, 'ADMIN_DELETE_MESSAGE', targetPhone, JSON.stringify(beforeDetails), JSON.stringify(afterDetails), currentTimeIsrael)
                 );
             } else {
-                // לוג למחיקה עצמית
+                // מחיקה עצמית נרשמת ללוג הרגיל של המחיקות delete_logs
                 queries.push(
                     env.DB.prepare(`INSERT INTO delete_logs (phone, ip_address, file_name, deleted_at) VALUES (?, ?, ?, ?)`).bind(user.phone, safeIp, fileName, currentTimeIsrael)
                 );
@@ -217,7 +212,7 @@ export async function handleDeleteMessage(request, env, userIp) {
             await env.DB.batch(queries);
             
             const successMsg = eligibility.isAdminDelete ? 
-                "ההודעה הועברה בהצלחה לארכיון ההנהלה." : 
+                "ההודעה הועברה בהצלחה לארכיון (ivr2:/delete)." : 
                 "ההודעה נמחקה בהצלחה.";
                 
             return Response.json({ success: true, message: successMsg });
