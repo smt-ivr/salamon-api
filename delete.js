@@ -63,15 +63,8 @@ async function checkEligibility(env, user, fileName) {
     // =========================================================
     if (!isOwnFile) {
         let isAdminAuthorized = false;
-        
         if (user.is_admin === 1) {
             const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
-            
-            // חסימה מוחלטת: אם יש דרישה לגוגל והוא לא מחובר דרך גוגל
-            if (perms.includes('require_google') && user.auth_method !== 'google' && user.auth_method !== 'master') {
-                return { allowed: false, message: "פעולה חסומה: יש להתחבר עם גוגל בלבד כדי לבצע פעולות ניהול במערכת." };
-            }
-
             if (perms.includes('all') || perms.includes('delete_messages')) {
                 isAdminAuthorized = true;
             }
@@ -98,6 +91,7 @@ async function checkEligibility(env, user, fileName) {
         let isTargetAdmin = 0;
 
         if (anyUpload) {
+            // הקובץ במסד הנתונים (של משתמש אחר)
             const uploaderRecord = await db.prepare(
                 `SELECT u.phone, u.upload_time, usr.is_admin 
                  FROM upload_events u 
@@ -109,6 +103,7 @@ async function checkEligibility(env, user, fileName) {
             targetUploadTime = uploaderRecord.upload_time;
             isTargetAdmin = uploaderRecord.is_admin || 0;
         } else {
+            // הקובץ הוקלט בטלפון ולא מופיע במסד - נשלוף פרטים מימות כדי שהמנהל יוכל למחוק
             const yemotDetails = await getFileDetailsFromYemot(env, fileName);
             if (!yemotDetails || !yemotDetails.phone || !yemotDetails.recordTime) {
                 return { allowed: false, message: "לא ניתן לבצע פעולת הנהלה: חסרים נתוני זיהוי של ההודעה (בימות המשיח)." };
@@ -122,6 +117,7 @@ async function checkEligibility(env, user, fileName) {
             }
         }
 
+        // הגבלות מנהל
         if (isTargetAdmin === 1) {
             return { allowed: false, message: "פעולה חסומה: לא ניתן למחוק הודעות של מנהלים אחרים במערכת." };
         }
@@ -182,7 +178,7 @@ export async function handleDeleteMessage(request, env, userIp) {
     let yemotActionUrl = "";
 
     if (eligibility.isAdminDelete) {
-        // מנהל - העברה לארכיון באמצעות פקודת move 
+        // מנהל - העברה לארכיון באמצעות פקודת move כפי שמופיע בתיעוד
         const targetPath = `${DELETE_ARCHIVE_PATH}/${fileName}`;
         yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=move&what=${encodeURIComponent(exactFilePath)}&target=${encodeURIComponent(targetPath)}`;
     } else {
@@ -199,6 +195,7 @@ export async function handleDeleteMessage(request, env, userIp) {
         const res = await fetch(yemotActionUrl);
         const data = await res.json();
 
+        // בדיקת success על פי התיעוד 
         if (data.success === true) {
             yemotSuccess = true;
         }
