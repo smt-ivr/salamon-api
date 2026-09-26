@@ -84,7 +84,7 @@ async function checkEligibility(env, user, fileName) {
 
     const isOwnFile = (uploaderPhone === user.phone);
 
-    // מאסטר עוקף את הגבלות הזמן והחסימות. אם זה של מישהו אחר הוא גם יעביר לארכיון
+    // מאסטר עוקף את הגבלות הזמן והחסימות
     if (user.is_master) {
         return { allowed: true, isAdminDelete: !isOwnFile, uploaderPhone: uploaderPhone };
     }
@@ -102,14 +102,13 @@ async function checkEligibility(env, user, fileName) {
             return { allowed: false, message: "פעולה חסומה: חסרה לך הרשאת מחיקת הודעות." };
         }
 
-        // הגנת מנהלים חלה אך ורק כשמנהל מנסה למחוק הודעה *של מישהו אחר*
         if (isUploaderAdmin === 1) {
             return { allowed: false, message: "פעולה חסומה: לא ניתן למחוק הודעות של מנהלים אחרים במערכת." };
         }
 
         const minutesPassed = getMinutesSinceIsraelDbTime(uploadTime);
         if (minutesPassed > (ADMIN_DELETE_WINDOW_DAYS * 24 * 60) || minutesPassed < 0) {
-            return { allowed: false, message: "לא ניתן להעביר לארכיון: ההרשאה מאפשרת פעולה רק על הודעות שהוקלטו בשבוע האחרון." };
+            return { allowed: false, message: "לא ניתן למחוק: ההרשאה מאפשרת פעולה רק על הודעות שהוקלטו בשבוע האחרון." };
         }
 
         return { allowed: true, isAdminDelete: true, uploaderPhone: uploaderPhone };
@@ -174,7 +173,7 @@ export async function handleDeleteMessage(request, env, userIp) {
         const res = await fetch(yemotActionUrl);
         const data = await res.json();
 
-        // בדיקת success על פי התיעוד ששלחת
+        // בדיקת success על פי התיעוד 
         if (data.success === true) {
             yemotSuccess = true;
         }
@@ -210,12 +209,8 @@ export async function handleDeleteMessage(request, env, userIp) {
             }
 
             await env.DB.batch(queries);
-            
-            const successMsg = eligibility.isAdminDelete ? 
-                "ההודעה הועברה בהצלחה לארכיון (ivr2:/delete)." : 
-                "ההודעה נמחקה בהצלחה.";
                 
-            return Response.json({ success: true, message: successMsg });
+            return Response.json({ success: true, message: "ההודעה נמחקה בהצלחה." });
         } catch (dbErr) {
             console.error("DB Log Error: ", dbErr);
             return Response.json({ 
