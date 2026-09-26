@@ -41,7 +41,7 @@ async function getFileDetailsFromYemot(env, fileName) {
 async function checkEligibility(env, user, fileName) {
     const db = env.DB;
     if (!fileName || !fileName.match(/^\d+\.wav$/)) {
-        return { allowed: false, message: "שם קובץ לא חוקי. ניתן לבצע פעולות על קבצי שמע מסוג מספרי בלבד." };
+        return { allowed: false, message: "שם קובץ לא חוקי. ניתן למחוק קבצי שמע מסוג מספרי בלבד." };
     }
 
     let uploaderPhone = null;
@@ -66,10 +66,11 @@ async function checkEligibility(env, user, fileName) {
         // במידה ולא נמצא במסד (הוקלט בטלפון), נשלוף מימות המשיח
         const yemotDetails = await getFileDetailsFromYemot(env, fileName);
         
+        // אם לא נמצא קובץ הטקסט או חסרים נתונים בימות - מחזירים את השגיאה המקורית המדויקת
         if (!yemotDetails || !yemotDetails.phone || !yemotDetails.recordTime) {
             return { 
                 allowed: false, 
-                message: "לא ניתן לבצע פעולה: ההודעה לא מופיעה במסד וחסרים נתוני זיהוי בקובץ (בימות המשיח)." 
+                message: "לא ניתן למחוק. ההודעה הוקלטה דרך הטלפון או לפני שדרוג המערכת." 
             };
         }
         
@@ -93,6 +94,7 @@ async function checkEligibility(env, user, fileName) {
     // לוגיקת פעולות הנהלה (פעולה על קובץ של משתמש אחר)
     // ==========================================
     if (!isOwnFile) {
+        // שגיאה מקורית למשתמש רגיל שמנסה למחוק הודעה של מישהו אחר
         if (user.is_admin !== 1) {
             return { allowed: false, message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." };
         }
@@ -118,12 +120,13 @@ async function checkEligibility(env, user, fileName) {
     // לוגיקת מחיקה עצמית (משתמש מוחק לעצמו)
     // ==========================================
     if (tzintukSent === 1) {
-        return { allowed: false, message: "לא ניתן למחוק הודעה שנשלחה עליה צינתוק." };
+        // הושאר הרווח לפני המילה כפי שהיה במקור
+        return { allowed: false, message: " לא ניתן למחוק הודעה שנשלחה עליה צינתוק" };
     }
 
     const minutesPassed = getMinutesSinceIsraelDbTime(uploadTime);
     if (minutesPassed > (DELETE_WINDOW_HOURS * 60) || minutesPassed < 0) {
-        return { allowed: false, message: `לא ניתן למחוק הודעה שהוקלטה לפני יותר מ-${DELETE_WINDOW_HOURS} שעות.` };
+        return { allowed: false, message: `לא ניתן למחוק הודעה שהוקלטה לפני יותר מ ${DELETE_WINDOW_HOURS} שעות.` };
     }
 
     return { allowed: true, isAdminDelete: false, uploaderPhone: user.phone };
@@ -158,7 +161,7 @@ export async function handleDeleteMessage(request, env, userIp) {
     let yemotActionUrl = "";
 
     if (eligibility.isAdminDelete) {
-        // מנהל - העברה לארכיון באמצעות פקודת move כפי שמופיע בתיעוד
+        // מנהל - העברה לארכיון באמצעות פקודת move 
         const targetPath = `${DELETE_ARCHIVE_PATH}/${fileName}`;
         yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=move&what=${encodeURIComponent(exactFilePath)}&target=${encodeURIComponent(targetPath)}`;
     } else {
@@ -213,9 +216,10 @@ export async function handleDeleteMessage(request, env, userIp) {
             return Response.json({ success: true, message: "ההודעה נמחקה בהצלחה." });
         } catch (dbErr) {
             console.error("DB Log Error: ", dbErr);
+            // הטקסט חזר במדויק למקור
             return Response.json({ 
                 success: true, 
-                message: `הפעולה בוצעה בימות המשיח, אך אירעה שגיאת SQL ברישום הלוג: ${dbErr.message}` 
+                message: `ההודעה נמחקה, אך אירעה שגיאת SQL ברישום הלוג: ${dbErr.message}` 
             });
         }
     } else {
