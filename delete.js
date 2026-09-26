@@ -3,7 +3,7 @@ import { getMinutesSinceIsraelDbTime, getIsraelTimeForDB } from './timeUtils.js'
 import { authenticateUser } from './auth.js';
 
 const DELETE_WINDOW_HOURS = 12; // חלון מחיקה למשתמש רגיל או למחיקה עצמית
-const ADMIN_DELETE_WINDOW_DAYS = 7; // חלון מחיקה למנהלים על הודעות של אחרים (שבוע)
+const ADMIN_DELETE_WINDOW_DAYS = 7; // חלון מחיקה למנהלים (שבוע)
 const FOLDER_PATH = 'ivr2:/1/2'; 
 const DELETE_ARCHIVE_PATH = 'ivr2:/delete';
 
@@ -40,91 +40,108 @@ async function getFileDetailsFromYemot(env, fileName) {
 
 async function checkEligibility(env, user, fileName) {
     const db = env.DB;
+    
+    // בדיקה מקורית מדויקת לשם הקובץ
     if (!fileName || !fileName.match(/^\d+\.wav$/)) {
         return { allowed: false, message: "שם קובץ לא חוקי. ניתן למחוק קבצי שמע מסוג מספרי בלבד." };
     }
 
-    let uploaderPhone = null;
-    let uploadTime = null;
-    let tzintukSent = 0;
-    let isUploaderAdmin = 0;
+    // בדיקה מקורית מדויקת למאסטר
+    if (user.is_master) {
+        return { allowed: true, isAdminDelete: true, uploaderPhone: "master_override" };
+    }
 
-    // שליפת פרטי ההעלאה מהמסד המקומי
-    const uploaderRecord = await db.prepare(
-        `SELECT u.phone, u.upload_time, u.tzintuk_sent, usr.is_admin 
-         FROM upload_events u 
-         LEFT JOIN users usr ON u.phone = usr.phone 
-         WHERE u.file_name = ?`
+    // בדיקה מקורית מדויקת של הקובץ במסד הנתונים
+    const anyUpload = await db.prepare(
+        `SELECT phone FROM upload_events WHERE file_name = ?`
     ).bind(fileName).first();
 
-    if (uploaderRecord) {
-        uploaderPhone = uploaderRecord.phone;
-        uploadTime = uploaderRecord.upload_time;
-        tzintukSent = uploaderRecord.tzintuk_sent;
-        isUploaderAdmin = uploaderRecord.is_admin || 0;
-    } else {
-        // במידה ולא נמצא במסד (הוקלט בטלפון), נשלוף מימות המשיח
-        const yemotDetails = await getFileDetailsFromYemot(env, fileName);
-        
-        // אם לא נמצא קובץ הטקסט או חסרים נתונים בימות - מחזירים את השגיאה המקורית המדויקת
-        if (!yemotDetails || !yemotDetails.phone || !yemotDetails.recordTime) {
-            return { 
-                allowed: false, 
-                message: "לא ניתן למחוק. ההודעה הוקלטה דרך הטלפון או לפני שדרוג המערכת." 
-            };
-        }
-        
-        uploaderPhone = yemotDetails.phone;
-        uploadTime = yemotDetails.recordTime;
+    const isOwnFile = anyUpload && anyUpload.phone === user.phone;
 
-        const uploaderUser = await db.prepare("SELECT is_admin FROM users WHERE phone = ?").bind(uploaderPhone).first();
-        if (uploaderUser) {
-            isUploaderAdmin = uploaderUser.is_admin || 0;
-        }
-    }
-
-    const isOwnFile = (uploaderPhone === user.phone);
-
-    // מאסטר עוקף את הגבלות הזמן והחסימות
-    if (user.is_master) {
-        return { allowed: true, isAdminDelete: !isOwnFile, uploaderPhone: uploaderPhone };
-    }
-
-    // ==========================================
-    // לוגיקת פעולות הנהלה (פעולה על קובץ של משתמש אחר)
-    // ==========================================
+    // =========================================================
+    // מסלול מחיקת מנהל (אם הקובץ לא נמצא, או שהוא של מישהו אחר)
+    // =========================================================
     if (!isOwnFile) {
-        // שגיאה מקורית למשתמש רגיל שמנסה למחוק הודעה של מישהו אחר
-        if (user.is_admin !== 1) {
-            return { allowed: false, message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." };
+        let isAdminAuthorized = false;
+        if (user.is_admin === 1) {
+            const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
+            if (perms.includes('all') || perms.includes('delete_messages')) {
+                isAdminAuthorized = true;
+            }
         }
 
-        const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
-        if (!perms.includes('all') && !perms.includes('delete_messages')) {
-            return { allowed: false, message: "פעולה חסומה: חסרה לך הרשאת מחיקת הודעות." };
+        // אם המשתמש הוא לא מנהל מורשה - נחזיר לו את ההודעות המקוריות בדיוק!
+        if (!isAdminAuthorized) {
+            if (!anyUpload) {
+                return { 
+                    allowed: false, 
+                    message: "לא ניתן למחוק. ההודעה הוקלטה דרך הטלפון או לפני שדרוג המערכת." 
+                };
+            } else {
+                return { 
+                    allowed: false, 
+                    message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." 
+                };
+            }
         }
 
-        if (isUploaderAdmin === 1) {
+        // מכאן ומטה - זה בוודאות מנהל מורשה שמנסה למחוק הודעה שלא שלו.
+        let targetPhone = null;
+        let targetUploadTime = null;
+        let isTargetAdmin = 0;
+
+        if (anyUpload) {
+            // הקובץ במסד הנתונים (של משתמש אחר)
+            const uploaderRecord = await db.prepare(
+                `SELECT u.phone, u.upload_time, usr.is_admin 
+                 FROM upload_events u 
+                 LEFT JOIN users usr ON u.phone = usr.phone 
+                 WHERE u.file_name = ?`
+            ).bind(fileName).first();
+            
+            targetPhone = uploaderRecord.phone;
+            targetUploadTime = uploaderRecord.upload_time;
+            isTargetAdmin = uploaderRecord.is_admin || 0;
+        } else {
+            // הקובץ הוקלט בטלפון ולא מופיע במסד - נשלוף פרטים מימות כדי שהמנהל יוכל למחוק
+            const yemotDetails = await getFileDetailsFromYemot(env, fileName);
+            if (!yemotDetails || !yemotDetails.phone || !yemotDetails.recordTime) {
+                return { allowed: false, message: "לא ניתן לבצע פעולת הנהלה: חסרים נתוני זיהוי של ההודעה (בימות המשיח)." };
+            }
+            targetPhone = yemotDetails.phone;
+            targetUploadTime = yemotDetails.recordTime;
+
+            const targetUser = await db.prepare("SELECT is_admin FROM users WHERE phone = ?").bind(targetPhone).first();
+            if (targetUser) {
+                isTargetAdmin = targetUser.is_admin || 0;
+            }
+        }
+
+        // הגבלות מנהל
+        if (isTargetAdmin === 1) {
             return { allowed: false, message: "פעולה חסומה: לא ניתן למחוק הודעות של מנהלים אחרים במערכת." };
         }
 
-        const minutesPassed = getMinutesSinceIsraelDbTime(uploadTime);
+        const minutesPassed = getMinutesSinceIsraelDbTime(targetUploadTime);
         if (minutesPassed > (ADMIN_DELETE_WINDOW_DAYS * 24 * 60) || minutesPassed < 0) {
             return { allowed: false, message: "לא ניתן למחוק: ההרשאה מאפשרת פעולה רק על הודעות שהוקלטו בשבוע האחרון." };
         }
 
-        return { allowed: true, isAdminDelete: true, uploaderPhone: uploaderPhone };
+        return { allowed: true, isAdminDelete: true, uploaderPhone: targetPhone };
     }
 
-    // ==========================================
-    // לוגיקת מחיקה עצמית (משתמש מוחק לעצמו)
-    // ==========================================
-    if (tzintukSent === 1) {
-        // הושאר הרווח לפני המילה כפי שהיה במקור
+    // =========================================================
+    // מסלול מחיקה עצמית (למשתמש רגיל או מנהל שמוחק לעצמו) - זהה למקור לחלוטין!
+    // =========================================================
+    const uploadRecord = await db.prepare(
+        `SELECT upload_time, tzintuk_sent FROM upload_events WHERE phone = ? AND file_name = ?`
+    ).bind(user.phone, fileName).first();
+
+    if (uploadRecord.tzintuk_sent === 1) {
         return { allowed: false, message: " לא ניתן למחוק הודעה שנשלחה עליה צינתוק" };
     }
 
-    const minutesPassed = getMinutesSinceIsraelDbTime(uploadTime);
+    const minutesPassed = getMinutesSinceIsraelDbTime(uploadRecord.upload_time);
     if (minutesPassed > (DELETE_WINDOW_HOURS * 60) || minutesPassed < 0) {
         return { allowed: false, message: `לא ניתן למחוק הודעה שהוקלטה לפני יותר מ ${DELETE_WINDOW_HOURS} שעות.` };
     }
@@ -161,16 +178,18 @@ export async function handleDeleteMessage(request, env, userIp) {
     let yemotActionUrl = "";
 
     if (eligibility.isAdminDelete) {
-        // מנהל - העברה לארכיון באמצעות פקודת move 
+        // מנהל - העברה לארכיון באמצעות פקודת move כפי שמופיע בתיעוד
         const targetPath = `${DELETE_ARCHIVE_PATH}/${fileName}`;
         yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=move&what=${encodeURIComponent(exactFilePath)}&target=${encodeURIComponent(targetPath)}`;
     } else {
-        // מחיקה עצמית - מחיקה מוחלטת עם פקודת delete
+        // מחיקה עצמית - מחיקה מוחלטת עם פקודת delete, בדיוק כמו במקור
         yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=delete&what=${encodeURIComponent(exactFilePath)}`;
     }
 
     let yemotSuccess = false;
-    let errorMessage = "השרת של ימות המשיח סירב לבצע את הפעולה. ייתכן והקובץ לא קיים.";
+    
+    // הודעת השגיאה המקורית המדויקת למקרה כישלון בימות
+    let errorMessage = "השרת של ימות המשיח סירב למחוק את הקובץ. ייתכן שהוא כבר נמחק.";
 
     try {
         const res = await fetch(yemotActionUrl);
