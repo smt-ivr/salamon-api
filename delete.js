@@ -2,68 +2,78 @@
 import { getMinutesSinceIsraelDbTime, getIsraelTimeForDB } from './timeUtils.js';
 import { authenticateUser } from './auth.js';
 
-const DELETE_WINDOW_HOURS = 12; 
+const DELETE_WINDOW_HOURS = 12; // חלון מחיקה למשתמש רגיל
+const ADMIN_DELETE_WINDOW_DAYS = 7; // חלון מחיקה למנהלים (שבוע)
 const FOLDER_PATH = 'ivr2:/1/2'; 
+const DELETE_ARCHIVE_PATH = 'ivr2:/delete';
 
 async function checkEligibility(db, user, fileName) {
     if (!fileName || !fileName.match(/^\d+\.wav$/)) {
-        return { allowed: false, message: "שם קובץ לא חוקי. ניתן למחוק קבצי שמע מסוג מספרי בלבד." };
+        return { allowed: false, message: "שם קובץ לא חוקי. ניתן לבצע פעולות על קבצי שמע מסוג מספרי בלבד." };
     }
 
-    // מאסטר עוקף את כל הגבלות המחיקה
+    // מאסטר עוקף את כל ההגבלות ויכול למחוק הכל
     if (user.is_master) {
-        return { allowed: true };
+        return { allowed: true, isAdminDelete: true, uploaderPhone: "master_override" };
     }
 
-    const anyUpload = await db.prepare(
-        `SELECT phone FROM upload_events WHERE file_name = ?`
+    // שליפת פרטי ההעלאה יחד עם נתוני המשתמש שהעלה (כדי לבדוק האם הוא מנהל)
+    const uploaderRecord = await db.prepare(
+        `SELECT u.phone, u.upload_time, u.tzintuk_sent, usr.is_admin 
+         FROM upload_events u 
+         LEFT JOIN users usr ON u.phone = usr.phone 
+         WHERE u.file_name = ?`
     ).bind(fileName).first();
 
-    // בודקים אם הקובץ קיים ב-DB והאם הוא שייך למשתמש הנוכחי
-    const isOwnFile = anyUpload && anyUpload.phone === user.phone;
+    // אם הקובץ לא קיים בבסיס הנתונים שלנו (הוקלט ישירות בטלפון או לפני השדרוג)
+    if (!uploaderRecord) {
+        return { 
+            allowed: false, 
+            message: "לא ניתן למחוק. ההודעה הוקלטה דרך הטלפון או לפני שדרוג המערכת." 
+        };
+    }
 
-    // אם זה לא הקובץ שלו (או שהקובץ לא קיים במערכת)
+    const isOwnFile = uploaderRecord.phone === user.phone;
+
+    // ==========================================
+    // לוגיקת מחיקה למנהלים (על הודעות של אחרים)
+    // ==========================================
     if (!isOwnFile) {
-        // אם זה מנהל עם הרשאות - מציגים לו את הודעת הפיתוח
-        if (user.is_admin === 1) {
-            const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
-            if (perms.includes('all') || perms.includes('delete_messages')) {
-                return {
-                    allowed: false,
-                    message: "האפשרות למחיקת הודעות של משתמשים אחרים על ידי מנהל נמצאת כעת בפיתוח."
-                };
-            }
-        }
         
-        // אם זה סתם משתמש - נחזיר את השגיאה המתאימה
-        if (!anyUpload) {
-            return { 
-                allowed: false, 
-                message: "לא ניתן למחוק. ההודעה הוקלטה דרך הטלפון או לפני שדרוג המערכת." 
-            };
-        } else {
-            return { 
-                allowed: false, 
-                message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." 
-            };
+        if (user.is_admin !== 1) {
+            return { allowed: false, message: "פעולה חסומה! אינך מורשה למחוק הודעה שהועלתה על ידי משתמש אחר." };
         }
+
+        const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
+        if (!perms.includes('all') && !perms.includes('delete_messages')) {
+            return { allowed: false, message: "פעולה חסומה: חסרה לך הרשאת מחיקת הודעות." };
+        }
+
+        if (uploaderRecord.is_admin === 1) {
+            return { allowed: false, message: "פעולה חסומה: לא ניתן למחוק הודעות של מנהלים אחרים במערכת." };
+        }
+
+        const minutesPassed = getMinutesSinceIsraelDbTime(uploaderRecord.upload_time);
+        if (minutesPassed > (ADMIN_DELETE_WINDOW_DAYS * 24 * 60) || minutesPassed < 0) {
+            return { allowed: false, message: `לא ניתן להעביר לארכיון: ההרשאה מאפשרת פעולה רק על הודעות שהוקלטו בשבוע האחרון.` };
+        }
+
+        return { allowed: true, isAdminDelete: true, uploaderPhone: uploaderRecord.phone };
     }
 
-    // מכאן והלאה: מדובר בוודאות בקובץ שהמשתמש עצמו העלה דרך האתר
-    const uploadRecord = await db.prepare(
-        `SELECT upload_time, tzintuk_sent FROM upload_events WHERE phone = ? AND file_name = ?`
-    ).bind(user.phone, fileName).first();
-
-    if (uploadRecord.tzintuk_sent === 1) {
-        return { allowed: false, message: "לא ניתן למחוק הודעה שנשלחה עליה צינתוק" };
+    // ==========================================
+    // לוגיקת מחיקה עצמית (משתמש מוחק לעצמו)
+    // ==========================================
+    if (uploaderRecord.tzintuk_sent === 1) {
+        return { allowed: false, message: "לא ניתן למחוק הודעה שנשלחה עליה צינתוק." };
     }
 
-    const minutesPassed = getMinutesSinceIsraelDbTime(uploadRecord.upload_time);
+    const minutesPassed = getMinutesSinceIsraelDbTime(uploaderRecord.upload_time);
     if (minutesPassed > (DELETE_WINDOW_HOURS * 60) || minutesPassed < 0) {
-        return { allowed: false, message: `לא ניתן למחוק הודעה שהוקלטה לפני יותר מ ${DELETE_WINDOW_HOURS} שעות.` };
+        return { allowed: false, message: `לא ניתן למחוק הודעה שהוקלטה לפני יותר מ-${DELETE_WINDOW_HOURS} שעות.` };
     }
 
-    return { allowed: true };
+    return { allowed: true, isAdminDelete: false, uploaderPhone: user.phone };
 }
 
 export async function handleCheckDeleteEligibility(request, env) {
@@ -92,39 +102,75 @@ export async function handleDeleteMessage(request, env, userIp) {
     }
 
     const exactFilePath = `${FOLDER_PATH}/${fileName}`;
-    const deleteUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=delete&what=${encodeURIComponent(exactFilePath)}`;
-    let yemotDeleted = false;
+    let yemotActionUrl = "";
+
+    if (eligibility.isAdminDelete) {
+        // מנהל - העברה לארכיון באמצעות שינוי נתיב בימות המשיח
+        const targetPath = `${DELETE_ARCHIVE_PATH}/${fileName}`;
+        yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=rename&what=${encodeURIComponent(exactFilePath)}&target=${encodeURIComponent(targetPath)}`;
+    } else {
+        // מחיקה עצמית - מחיקה מוחלטת כרגיל
+        yemotActionUrl = `https://www.call2all.co.il/ym/api/FileAction?token=${env.YEMOT_TOKEN}&action=delete&what=${encodeURIComponent(exactFilePath)}`;
+    }
+
+    let yemotSuccess = false;
+    let errorMessage = "השרת של ימות המשיח סירב לבצע את הפעולה. ייתכן והקובץ לא קיים.";
 
     try {
-        const res = await fetch(deleteUrl);
+        const res = await fetch(yemotActionUrl);
         const data = await res.json();
 
-        if (data.responseStatus === "OK" && data.success) {
-            yemotDeleted = true;
-        } else {
-            return Response.json({ success: false, message: "השרת של ימות המשיח סירב למחוק את הקובץ. ייתכן שהוא כבר נמחק." });
+        // API של ימות לעיתים מחזיר אובייקט חיובי בפורמטים שונים בהתאם ל-Action
+        if (data.responseStatus === "OK") {
+            yemotSuccess = true;
         }
     } catch (err) {
         return Response.json({ success: false, message: "שגיאת רשת בנסיון ההתחברות לשרתי ימות המשיח." });
     }
 
-    if (yemotDeleted) {
+    if (yemotSuccess) {
         try {
             const currentTimeIsrael = getIsraelTimeForDB();
             const safeIp = userIp || '0.0.0.0';
 
-            await env.DB.batch([
-                env.DB.prepare(`DELETE FROM upload_events WHERE file_name = ?`).bind(fileName),
-                env.DB.prepare(`INSERT INTO delete_logs (phone, ip_address, file_name, deleted_at) VALUES (?, ?, ?, ?)`).bind(user.phone, safeIp, fileName, currentTimeIsrael)
-            ]);
+            // מסירים את ההודעה מלוח ההעלאות כך שהיא תיעלם מהממשק
+            const queries = [
+                env.DB.prepare(`DELETE FROM upload_events WHERE file_name = ?`).bind(fileName)
+            ];
+
+            if (eligibility.isAdminDelete) {
+                // לוג מפורט למנהל: רושמים מאיזה IP, של מי הייתה ההודעה, ומה הפעולה בדיוק
+                const targetPhone = eligibility.uploaderPhone || 'unknown';
+                const beforeDetails = { file_name: fileName, original_folder: FOLDER_PATH };
+                const afterDetails = { status: 'moved_to_archive', new_folder: DELETE_ARCHIVE_PATH, performed_from_ip: safeIp };
+                
+                queries.push(
+                    env.DB.prepare(
+                        `INSERT INTO admin_audit_logs (admin_phone, action_type, target_phone, details_before, details_after, timestamp) VALUES (?, ?, ?, ?, ?, ?)`
+                    ).bind(user.phone, 'ADMIN_DELETE_MESSAGE', targetPhone, JSON.stringify(beforeDetails), JSON.stringify(afterDetails), currentTimeIsrael)
+                );
+            } else {
+                // מחיקה עצמית נרשמת ללוג הרגיל
+                queries.push(
+                    env.DB.prepare(`INSERT INTO delete_logs (phone, ip_address, file_name, deleted_at) VALUES (?, ?, ?, ?)`).bind(user.phone, safeIp, fileName, currentTimeIsrael)
+                );
+            }
+
+            await env.DB.batch(queries);
             
-            return Response.json({ success: true, message: "ההודעה נמחקה בהצלחה." });
+            const successMsg = eligibility.isAdminDelete ? 
+                "ההודעה הועברה בהצלחה לתיקיית ivr2:/delete." : 
+                "ההודעה נמחקה בהצלחה.";
+                
+            return Response.json({ success: true, message: successMsg });
         } catch (dbErr) {
             console.error("DB Log Error: ", dbErr);
             return Response.json({ 
                 success: true, 
-                message: `ההודעה נמחקה, אך אירעה שגיאת SQL ברישום הלוג: ${dbErr.message}` 
+                message: `הפעולה בוצעה בימות המשיח, אך אירעה שגיאת SQL ברישום הלוג: ${dbErr.message}` 
             });
         }
+    } else {
+        return Response.json({ success: false, message: errorMessage });
     }
 }
