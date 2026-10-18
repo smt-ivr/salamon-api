@@ -535,11 +535,57 @@ export async function handleAdminDeleteMessage(request, env) {
     const body = await readBody(request);
     const denied = await requireAdmin(env, { ...body, active: true });
     if (denied) return denied;
-    if (!body.messageId) return Response.json({ error: "חסר מזהה הודעה" }, { status: 400 });
+    const ids = [...new Set((Array.isArray(body.messageIds) ? body.messageIds : [body.messageId]).map(Number).filter(n => Number.isInteger(n) && n > 0))].slice(0, 500);
+    if (!ids.length) return Response.json({ error: "חסר מזהה הודעה" }, { status: 400 });
 
     try {
-        if (body.hardDelete) await env.DB.prepare("DELETE FROM chat_messages WHERE id = ?").bind(body.messageId).run();
-        else await env.DB.prepare("UPDATE chat_messages SET is_deleted = 1, message_text = '', updated_at = ? WHERE id = ?").bind(getIsraelTimeForDB(), body.messageId).run();
-        return Response.json({ success: true, message: "ההודעה נמחקה בהצלחה" });
+        const marks = ids.map(() => '?').join(',');
+        const now = getIsraelTimeForDB();
+        // מחיקה רכה שומרת עותק של הטקסט שרק המנהל רואה, כדי שאפשר יהיה לשחזר או למחוק לצמיתות מאוחר יותר.
+        // הודעה שכבר נמחקה רכה נמחקת עכשיו לצמיתות.
+        const stmts = body.hardDelete
+            ? [env.DB.prepare(`DELETE FROM chat_messages WHERE id IN (${marks})`).bind(...ids),
+               env.DB.prepare(`DELETE FROM chat_email_links WHERE message_id IN (${marks})`).bind(...ids)]
+            : [env.DB.prepare(`UPDATE chat_messages SET deleted_text = message_text, deleted_at = ?, is_deleted = 1, message_text = '', updated_at = ? WHERE id IN (${marks}) AND is_deleted = 0`).bind(now, now, ...ids)];
+        await env.DB.batch(stmts);
+        return Response.json({ success: true, deleted: ids.length, message: ids.length > 1 ? `${ids.length} הודעות נמחקו` : "ההודעה נמחקה בהצלחה" });
     } catch (e) { return Response.json({ error: "שגיאה במחיקת ההודעה" }, { status: 500 }); }
+}
+
+// שחזור הודעה שנמחקה רכה (כל עוד לא נמחקה לצמיתות)
+export async function handleAdminRestoreMessage(request, env) {
+    const body = await readBody(request);
+    const denied = await requireAdmin(env, { ...body, active: true });
+    if (denied) return denied;
+    const id = Number(body.messageId);
+    if (!id) return Response.json({ error: "חסר מזהה הודעה" }, { status: 400 });
+    const res = await env.DB.prepare("UPDATE chat_messages SET message_text = deleted_text, deleted_text = NULL, deleted_at = NULL, is_deleted = 0, updated_at = ? WHERE id = ? AND is_deleted = 1 AND deleted_text IS NOT NULL AND deleted_text != ''")
+        .bind(getIsraelTimeForDB(), id).run();
+    if (!res.meta || !res.meta.changes) return Response.json({ error: "אי אפשר לשחזר את ההודעה הזו (נמחקה לפני שנשמר עותק)" }, { status: 400 });
+    return Response.json({ success: true });
+}
+
+// ניקוי שיחה: כל ההודעות שנמחקו, או השיחה כולה
+export async function handleAdminPurgeChat(request, env) {
+    const body = await readBody(request);
+    const denied = await requireAdmin(env, { ...body, active: true });
+    if (denied) return denied;
+    const phone = body.targetPhone ? String(body.targetPhone) : '';
+    if (!phone || !['deleted', 'all'].includes(body.scope)) return Response.json({ error: "נתונים חסרים" }, { status: 400 });
+
+    const where = body.scope === 'all' ? "user_phone = ?" : "user_phone = ? AND is_deleted = 1";
+    const { results } = await env.DB.prepare(`SELECT id FROM chat_messages WHERE ${where}`).bind(phone).all();
+    const ids = (results || []).map(r => r.id);
+    const stmts = [env.DB.prepare(`DELETE FROM chat_messages WHERE ${where}`).bind(phone)];
+    if (body.scope === 'all') {
+        stmts.push(env.DB.prepare("DELETE FROM chat_email_links WHERE phone = ?").bind(phone));
+        stmts.push(env.DB.prepare("DELETE FROM chat_threads WHERE user_phone = ?").bind(phone));
+    } else {
+        for (let i = 0; i < ids.length; i += 90) {
+            const chunk = ids.slice(i, i + 90);
+            stmts.push(env.DB.prepare(`DELETE FROM chat_email_links WHERE message_id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk));
+        }
+    }
+    await env.DB.batch(stmts);
+    return Response.json({ success: true, deleted: ids.length });
 }

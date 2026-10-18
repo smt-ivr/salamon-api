@@ -6,14 +6,16 @@ import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
 import { processTzintukRequest } from './tzintuk.js';
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
-import { handleGetSystemMessagesForUser, handleAdminListSystemMessages, handleAdminSaveSystemMessage, handleAdminDeleteSystemMessage, handleAdminGetAdLogs } from './systemMessage.js';
+import { handleGetSystemMessagesForUser, handleAdminListSystemMessages, handleAdminSaveSystemMessage, handleAdminDeleteSystemMessage, handleAdminGetAdLogs, handleSystemMessageEvent, handleAdminSystemMessageAction, handleAdminAdDesigns } from './systemMessage.js';
+import { handleAdminMailAudience, handleAdminMailPreview, handleAdminMailTest, handleAdminMailSend, handleAdminMailList, handleAdminMailGet, handleAdminMailDelete, handleAdminMailCancel, handleMailOpen, handleMailClick, processScheduledMail } from './mail.js';
+import { handleAdminVoiceList, handleAdminVoicePhoneStats, handleAdminVoiceAudience } from './voice.js';
 import { handleGetListenStats } from './listenStats.js';
 import { handlePhoneApiStats } from './phoneApi.js';
 import { handleGetSystemStats } from './stats.js';
 
 import {
     handleUserGetChat, handleUserCheckUnread, handleUserSendMessage, handleUserMarkRead, handleUserDeleteMessage, handleUserTyping, handleUserPresence, handleUserEmailLink,
-    handleAdminGetConversations, handleAdminGetChat, handleAdminSendMessage, handleAdminMarkRead, handleAdminDeleteMessage as handleAdminDeleteChatMessage, handleAdminSendCustomEmail,
+    handleAdminGetConversations, handleAdminGetChat, handleAdminSendMessage, handleAdminMarkRead, handleAdminDeleteMessage as handleAdminDeleteChatMessage, handleAdminRestoreMessage, handleAdminPurgeChat, handleAdminSendCustomEmail,
     handleAdminEditMessage, handleAdminTyping, handleAdminThreadMeta, handleAdminMarkUnread, handleAdminSearchMessages, handleAdminChatSettings, handleAdminChatTestEmail
 } from './chat.js';
 import { ensureSchema } from './schema.js';
@@ -55,6 +57,24 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/save")) response = await handleAdminSaveSystemMessage(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/delete")) response = await handleAdminDeleteSystemMessage(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/logs")) response = await handleAdminGetAdLogs(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/action")) response = await handleAdminSystemMessageAction(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/designs")) response = await handleAdminAdDesigns(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/system-message/event")) response = await handleSystemMessageEvent(request, env, userIp);
+
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/audience")) response = await handleAdminMailAudience(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/preview")) response = await handleAdminMailPreview(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/test")) response = await handleAdminMailTest(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/send")) response = await handleAdminMailSend(request, env, ctx);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/list")) response = await handleAdminMailList(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/get")) response = await handleAdminMailGet(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/delete")) response = await handleAdminMailDelete(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/mail/cancel")) response = await handleAdminMailCancel(request, env);
+            else if (request.method === "GET" && /\/api\/m\/o\/ms_[a-f0-9]+\.gif$/.test(pathname)) response = await handleMailOpen(request, env, userIp);
+            else if (request.method === "GET" && /\/api\/m\/c\/ms_[a-f0-9]+\/\d+$/.test(pathname)) response = await handleMailClick(request, env, userIp);
+
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/list")) response = await handleAdminVoiceList(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/phone-stats")) response = await handleAdminVoicePhoneStats(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/audience")) response = await handleAdminVoiceAudience(request, env);
             
             else if (request.method === "POST" && pathname.endsWith("/api/messages/list")) response = await handleGetMessages(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/messages/upload")) response = await handleUploadMessage(request, env);
@@ -133,6 +153,8 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/custom-email")) response = await handleAdminSendCustomEmail(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/read")) response = await handleAdminMarkRead(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/delete")) response = await handleAdminDeleteChatMessage(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/restore")) response = await handleAdminRestoreMessage(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/purge")) response = await handleAdminPurgeChat(request, env);
 
             else if (pathname.includes("/api/verify/admin/")) {
                 if (request.method !== "POST") response = Response.json({ error: "מתודה לא מורשית" }, { status: 405 });
@@ -211,6 +233,7 @@ export default {
             const result = await enforceNameLocks(env).catch(e => ({ error: e.message }));
             if (result.restored && result.restored.length) console.log('name locks restored', result.restored);
             if (result.error) console.error('name locks', result.error);
+            await processScheduledMail(env).catch(e => console.error('mail', e));
             if (new Date().getUTCHours() === 3 && new Date().getUTCMinutes() < 15) await pruneActivity(env).catch(() => {});
         })());
     }
