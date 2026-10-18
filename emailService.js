@@ -29,8 +29,13 @@ export async function sendEmail(env, to, subject, html, text) {
     }
 }
 
+// מניעת הזרקת HTML לתוך תבניות האימייל
+export function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 // תבנית בסיס מעוצבת ויוקרתית לאימיילים
-const getBaseTemplate = (title, contentHtml, unsubscribeUrl = null) => `
+export const getBaseTemplate = (title, contentHtml, unsubscribeUrl = null) => `
 <div style="background-color: #f1f5f9; padding: 40px 15px; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; direction: rtl; text-align: right;">
     <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1); overflow: hidden;">
         

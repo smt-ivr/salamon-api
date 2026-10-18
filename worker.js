@@ -12,9 +12,13 @@ import { handlePhoneApiStats } from './phoneApi.js';
 import { handleGetSystemStats } from './stats.js';
 
 import {
-    handleUserGetChat, handleUserCheckUnread, handleUserSendMessage, handleUserMarkRead, handleUserDeleteMessage,
-    handleAdminGetConversations, handleAdminGetChat, handleAdminSendMessage, handleAdminMarkRead, handleAdminDeleteMessage as handleAdminDeleteChatMessage, handleAdminSendCustomEmail
+    handleUserGetChat, handleUserCheckUnread, handleUserSendMessage, handleUserMarkRead, handleUserDeleteMessage, handleUserTyping,
+    handleAdminGetConversations, handleAdminGetChat, handleAdminSendMessage, handleAdminMarkRead, handleAdminDeleteMessage as handleAdminDeleteChatMessage, handleAdminSendCustomEmail,
+    handleAdminEditMessage, handleAdminTyping, handleAdminThreadMeta, handleAdminMarkUnread, handleAdminSearchMessages, handleAdminChatSettings, handleAdminChatTestEmail
 } from './chat.js';
+import { ensureSchema } from './schema.js';
+import { beginTracking, finishTracking, handleAdminActivityOnline, handleAdminActivityFeed, handleAdminActivityUser, pruneActivity } from './activity.js';
+import { handleAdminNameLocksList, handleAdminNameLocksSave, handleAdminNameLocksDelete, handleAdminNameLocksEnforce, enforceNameLocks } from './nameLocks.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -25,7 +29,12 @@ export default {
         const pathname = url.pathname.replace(/\/$/, "");
         const userIp = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
+        let tracking = null;
         try {
+            // אם יצירת הטבלאות נכשלת, שאר המערכת ממשיכה לעבוד כרגיל
+            await ensureSchema(env).catch(e => console.error('schema', e));
+            tracking = await beginTracking(request, env, pathname, userIp).catch(e => { console.error('tracking', e); return null; });
+
             let response;
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
 
@@ -85,12 +94,29 @@ export default {
 
             else if (request.method === "POST" && pathname.endsWith("/api/chat/list")) response = await handleUserGetChat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/unread")) response = await handleUserCheckUnread(request, env);
-            else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) response = await handleUserSendMessage(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) response = await handleUserSendMessage(request, env, ctx);
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/typing")) response = await handleUserTyping(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/read")) response = await handleUserMarkRead(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/delete")) response = await handleUserDeleteMessage(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/conversations")) response = await handleAdminGetConversations(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/list")) response = await handleAdminGetChat(request, env);
-            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/send")) response = await handleAdminSendMessage(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/send")) response = await handleAdminSendMessage(request, env, ctx);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/edit")) response = await handleAdminEditMessage(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/typing")) response = await handleAdminTyping(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/meta")) response = await handleAdminThreadMeta(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/unread")) response = await handleAdminMarkUnread(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/search")) response = await handleAdminSearchMessages(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/settings")) response = await handleAdminChatSettings(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/test-email")) response = await handleAdminChatTestEmail(request, env);
+
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/activity/online")) response = await handleAdminActivityOnline(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/activity/feed")) response = await handleAdminActivityFeed(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/activity/user")) response = await handleAdminActivityUser(request, env);
+
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/name-locks/list")) response = await handleAdminNameLocksList(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/name-locks/save")) response = await handleAdminNameLocksSave(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/name-locks/delete")) response = await handleAdminNameLocksDelete(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/name-locks/enforce")) response = await handleAdminNameLocksEnforce(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/custom-email")) response = await handleAdminSendCustomEmail(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/read")) response = await handleAdminMarkRead(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/delete")) response = await handleAdminDeleteChatMessage(request, env);
@@ -147,11 +173,27 @@ export default {
             
             else response = Response.json({ error: "נתיב לא נמצא" }, { status: 404 });
 
+            if (tracking) {
+                const job = finishTracking(env, tracking, response).catch(e => console.error('tracking', e));
+                if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
+            }
+
             const isPlainText = response.headers && response.headers.get('Content-Type') === 'text/plain; charset=utf-8';
             let newResponse = isPlainText ? response : new Response(response.body, response);
             for (let [key, value] of Object.entries(corsHeaders)) newResponse.headers.set(key, value);
             return newResponse;
 
         } catch (error) { return Response.json({ error: error.message }, { status: 500, headers: corsHeaders }); }
+    },
+
+    // משימה מתוזמנת (ראו triggers ב-wrangler.toml): אכיפת נעילות שמות וניקוי יומן ישן
+    async scheduled(event, env, ctx) {
+        ctx.waitUntil((async () => {
+            await ensureSchema(env);
+            const result = await enforceNameLocks(env).catch(e => ({ error: e.message }));
+            if (result.restored && result.restored.length) console.log('name locks restored', result.restored);
+            if (result.error) console.error('name locks', result.error);
+            if (new Date().getUTCHours() === 3 && new Date().getUTCMinutes() < 15) await pruneActivity(env).catch(() => {});
+        })());
     }
 };

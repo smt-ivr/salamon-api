@@ -7,3 +7,7 @@ compatibility_date = "2026-05-24"
 binding = "DB"
 database_name = "salamon" # שנה לשם מסד הנתונים שיצרת
 database_id = "c99ef333-9929-4886-b160-b6d563b29cea" # יש להעתיק מדאשבורד קלאודפלייר
+
+# אכיפת נעילות שמות (שחזור אוטומטי) וניקוי יומן פעילות ישן
+[triggers]
+crons = ["*/15 * * * *"]
