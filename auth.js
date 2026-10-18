@@ -9,7 +9,8 @@ export async function authenticateUser(db, userToken) {
     const session = await db.prepare("SELECT * FROM user_tokens WHERE id = ?").bind(userToken).first();
     if (!session) return null;
 
-    const isTemp = session.token_type === 'temporary' || session.token_type === 'password_temp' || session.token_type === 'master';
+    // email_link: חיבור זמני שנוצר מקישור חד-פעמי במייל הצ'אט
+    const isTemp = session.token_type === 'temporary' || session.token_type === 'password_temp' || session.token_type === 'master' || session.token_type === 'email_link';
     const authMethod = session.token_type === 'google_perm' ? 'google' : (session.token_type === 'master' ? 'master' : 'password');
 
     if (isTemp) {

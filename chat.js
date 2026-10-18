@@ -9,7 +9,8 @@ import { getNameFromIni, getAllNamesFromIni } from './yemot.js';
 import { isMainAdmin, forbidden, sessionExpired } from './adminAuth.js';
 import { getSettings, setSettings, EDITABLE_SETTINGS } from './schema.js';
 import { getPresenceMap } from './activity.js';
-import { markAdminActive, maybeNotifyAdmin, decideCustomerEmail, sendCustomerReplyEmail, sendTestAdminEmail } from './chatNotify.js';
+import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
+import { logActivity } from './activity.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -125,7 +126,12 @@ export async function handleUserCheckUnread(request, env) {
             getSettings(env),
         ]);
         const vis = adminVisibility(settings);
-        return Response.json({ success: true, unreadCount: countRes.unread || 0, adminTyping: vis.showTyping && isFresh(thread && thread.admin_typing_at, TYPING_SECONDS) });
+        // ההודעה האחרונה שלא נקראה - להתראת דפדפן אצל הלקוח
+        const last = countRes.unread ? await env.DB.prepare("SELECT id, message_text FROM chat_messages WHERE user_phone = ? AND sender = 'admin' AND is_read = 0 AND is_deleted = 0 ORDER BY id DESC LIMIT 1").bind(user.phone).first() : null;
+        return Response.json({
+            success: true, unreadCount: countRes.unread || 0, adminTyping: vis.showTyping && isFresh(thread && thread.admin_typing_at, TYPING_SECONDS),
+            lastUnread: last ? { id: last.id, text: String(last.message_text || '').slice(0, 160) } : null,
+        });
     } catch (e) { return Response.json({ error: "שגיאה בבדיקת הודעות" }, { status: 500 }); }
 }
 
@@ -179,6 +185,63 @@ export async function handleUserTyping(request, env) {
     if (error) return error;
     await upsertThread(env, user.phone, { user_typing_at: body.typing === false ? null : getIsraelTimeForDB() });
     return Response.json({ success: true });
+}
+
+// נוכחות הלקוח באתר: active (הלשונית פתוחה מולו), hidden (עבר לכרטיסייה אחרת), offline (סגר את האתר)
+export async function handleUserPresence(request, env) {
+    const text = await request.text().catch(() => '');
+    let body = {};
+    try { body = JSON.parse(text || '{}'); } catch (e) {}
+    const { user, error } = await requireUser(env, body);
+    if (error) return error;
+    const state = ['active', 'hidden', 'offline'].includes(body.state) ? body.state : 'active';
+    const now = getIsraelTimeForDB();
+    await env.DB.prepare(`INSERT INTO user_presence (phone, last_seen_at, page_state, page_state_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(phone) DO UPDATE SET page_state = excluded.page_state, page_state_at = excluded.page_state_at,
+        last_seen_at = CASE WHEN excluded.page_state = 'offline' THEN user_presence.last_seen_at ELSE excluded.last_seen_at END`)
+        .bind(user.phone, now, state, now).run();
+    return Response.json({ success: true });
+}
+
+// פתיחת הקישור החד-פעמי מהמייל: מתעד את הפתיחה ופותח את הצ'אט (אם צריך - עם חיבור זמני)
+export async function handleUserEmailLink(request, env) {
+    const body = await readBody(request);
+    const ip = request.headers.get('cf-connecting-ip') || '';
+    const ua = (request.headers.get('user-agent') || '').slice(0, 400);
+    const r = await redeemEmailLink(env, body.token);
+    if (r.status === 'invalid') return Response.json({ error: "הקישור אינו תקין", code: 'invalid' }, { status: 404 });
+
+    const link = r.link;
+    const current = body.userToken ? await authenticateUser(env.DB, body.userToken) : null;
+    const isOwner = current && current.phone === link.phone;
+
+    if (r.status !== 'ok') {
+        if (isOwner) return Response.json({ success: true, messageId: link.message_id, alreadyUsed: true });
+        return Response.json({
+            error: r.status === 'used' ? "הקישור כבר נוצל. יש להתחבר כדי לצפות בצ'אט." : "תוקף הקישור פג. יש להתחבר כדי לצפות בצ'אט.",
+            code: r.status,
+        }, { status: 410 });
+    }
+
+    // סימון כמשומש באופן אטומי, כדי ששתי לחיצות במקביל לא ינוצלו שתיהן
+    const now = getIsraelTimeForDB();
+    const upd = await env.DB.prepare("UPDATE chat_email_links SET used_at = ?, used_ip = ?, used_user_agent = ? WHERE id = ? AND used_at IS NULL").bind(now, ip, ua, r.id).run();
+    if (!upd.meta || !upd.meta.changes) return Response.json({ error: "הקישור כבר נוצל. יש להתחבר כדי לצפות בצ'אט.", code: 'used' }, { status: 410 });
+    await logActivity(env, link.phone, 'EMAIL_LINK_OPENED', JSON.stringify({ messageId: link.message_id }), ip, ua, now).catch(() => {});
+
+    const msg = await env.DB.prepare("SELECT message_text, created_at FROM chat_messages WHERE id = ?").bind(link.message_id).first();
+    const preview = msg ? { text: String(msg.message_text || '').slice(0, 500), createdAt: msg.created_at } : null;
+    if (isOwner) return Response.json({ success: true, messageId: link.message_id, preview });
+
+    const owner = await env.DB.prepare("SELECT phone, google_login_only FROM users WHERE phone = ?").bind(link.phone).first();
+    if (!owner) return Response.json({ error: "החשבון לא נמצא", code: 'invalid' }, { status: 404 });
+    // חשבון שננעל לכניסה עם Google בלבד: מציגים את ההודעה, אבל הכניסה נשארת דרך Google
+    if (owner.google_login_only === 1) return Response.json({ success: true, messageId: link.message_id, preview, needLogin: true, googleOnly: true });
+
+    const token = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at, session_email) VALUES (?, ?, 'email_link', ?, ?, ?, ?)")
+        .bind(token, owner.phone, now, getFutureIsraelTimeForDB(30), now, link.email || null).run();
+    return Response.json({ success: true, messageId: link.message_id, preview, userToken: token });
 }
 
 export async function handleUserDeleteMessage(request, env) {
@@ -236,7 +299,7 @@ export async function handleAdminGetConversations(request, env) {
                 unread_count: r.unread_count || 0,
                 total: r.total,
                 last_message: { sender: last.sender, text: last.is_deleted === 1 ? DELETED_TEXT : String(last.message_text || '').slice(0, 140) },
-                online: !!p.online, last_seen_at: p.lastSeenAt || null,
+                online: !!p.online, presence: p.status || 'offline', last_seen_at: p.lastSeenAt || null,
                 typing: isFresh(t.user_typing_at, TYPING_SECONDS),
                 pinned: t.pinned === 1, archived: t.archived === 1, note: t.note || '',
                 has_account: r.user_phone in emails, email: emails[r.user_phone] || '',
@@ -278,13 +341,17 @@ export async function handleAdminGetChat(request, env) {
             getNameFromIni(phone, env.YEMOT_TOKEN).catch(() => null),
         ]);
         const replies = await attachReplies(env, rows);
-        const messages = rows.map(m => ({ ...m, edited: isEdited(m), reply: m.reply_to ? (replies[m.reply_to] || null) : null }));
+        // תיעוד מיילים לכל הודעה: מתי נשלח ומתי הלקוח פתח את הקישור
+        const { results: links } = await env.DB.prepare("SELECT message_id, created_at, sent_ok, used_at, used_ip FROM chat_email_links WHERE phone = ? ORDER BY created_at").bind(phone).all();
+        const emailByMsg = {};
+        for (const l of links || []) emailByMsg[l.message_id] = { sentAt: l.created_at, ok: l.sent_ok === 1, openedAt: l.used_at, openedIp: l.used_ip };
+        const messages = rows.map(m => ({ ...m, edited: isEdited(m), reply: m.reply_to ? (replies[m.reply_to] || null) : null, email: emailByMsg[m.id] || null }));
         const t = thread || {};
         const p = presence[phone] || {};
         return Response.json({
             success: true, messages, hasMore, userName: userName || 'משתמש לא מזוהה',
             userTyping: isFresh(t.user_typing_at, TYPING_SECONDS),
-            presence: { online: !!p.online, lastSeenAt: p.lastSeenAt || null, device: p.device || '' },
+            presence: { online: !!p.online, status: p.status || 'offline', lastSeenAt: p.lastSeenAt || null, device: p.device || '' },
             thread: { pinned: t.pinned === 1, archived: t.archived === 1, note: t.note || '', userSeenAt: t.user_seen_at || null, userNotifiedAt: t.user_notified_at || null },
             user: user ? { hasAccount: true, email: user.email || '', receiveEmails: user.receive_emails !== 0 } : { hasAccount: false },
         });
@@ -312,23 +379,19 @@ export async function handleAdminSendMessage(request, env, ctx) {
             .bind(phone, text, now, now, replyTo).run();
         await upsertThread(env, phone, { admin_typing_at: null, archived: 0 });
 
-        // מצב המייל: מהבקשה, או מהגדרת ברירת המחדל. sendEmail הישן נתמך לתאימות.
-        let mode = body.emailMode;
-        if (!mode) mode = body.sendEmail === true ? 'always' : (await getSettings(env)).customer_email_mode || 'auto';
-        if (!['auto', 'always', 'never'].includes(mode)) mode = 'auto';
+        const messageId = res.meta && res.meta.last_row_id;
 
-        const decision = await decideCustomerEmail(env, phone, mode);
-        if (decision.send) {
-            // תופסים את ההתראה מיד כדי שהודעות נוספות ברצף לא ישלחו מייל כפול,
-            // ושולחים אחרי השהיה קצרה כדי שהמייל יכלול את כל התשובות שנכתבו ברצף.
-            await upsertThread(env, phone, { user_notified_at: now });
-            const delay = Number(env.CHAT_EMAIL_DELAY_MS ?? 12000);
-            const job = new Promise(r => setTimeout(r, delay))
-                .then(() => sendCustomerReplyEmail(env, phone, decision.email))
-                .catch(e => console.error('customer email failed', e));
-            if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
+        // מייל ללקוח נשלח רק כשהמנהל סימן זאת במפורש על ההודעה
+        let email = 'none';
+        if (body.sendEmail === true || body.emailMode === 'always') {
+            const can = await canEmailCustomer(env, phone);
+            email = can.ok ? 'queued' : can.reason;
+            if (can.ok) {
+                const job = sendCustomerMessageEmail(env, phone, messageId, can.email).catch(e => console.error('customer email failed', e));
+                if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
+            }
         }
-        return Response.json({ success: true, message: "ההודעה נשלחה", id: res.meta && res.meta.last_row_id, email: decision.send ? 'queued' : decision.reason });
+        return Response.json({ success: true, message: "ההודעה נשלחה", id: messageId, email });
     } catch (e) { return Response.json({ error: "שגיאה בשליחת הודעה" }, { status: 500 }); }
 }
 
@@ -407,20 +470,10 @@ export async function handleAdminChatSettings(request, env) {
     if (body.settings) {
         const input = body.settings;
         const values = {};
-        if (input.notify_admin_email !== undefined) {
-            const email = String(input.notify_admin_email || '').trim().toLowerCase();
-            if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Response.json({ error: "כתובת האימייל אינה תקינה" }, { status: 400 });
-            values.notify_admin_email = email;
-        }
         if (input.notify_admin_enabled !== undefined) values.notify_admin_enabled = input.notify_admin_enabled ? '1' : '0';
         const clamp = (v, min, max) => String(Math.min(max, Math.max(min, Math.round(Number(v) || min))));
         if (input.notify_idle_minutes !== undefined) values.notify_idle_minutes = clamp(input.notify_idle_minutes, 1, 240);
         if (input.notify_cooldown_minutes !== undefined) values.notify_cooldown_minutes = clamp(input.notify_cooldown_minutes, 1, 1440);
-        if (input.customer_offline_minutes !== undefined) values.customer_offline_minutes = clamp(input.customer_offline_minutes, 1, 120);
-        if (input.customer_email_mode !== undefined) {
-            if (!['auto', 'always', 'never'].includes(input.customer_email_mode)) return Response.json({ error: "מצב מייל לא חוקי" }, { status: 400 });
-            values.customer_email_mode = input.customer_email_mode;
-        }
         for (const k of ['admin_show_presence', 'admin_show_typing', 'admin_show_read_receipts']) {
             if (input[k] !== undefined) values[k] = input[k] ? '1' : '0';
         }
@@ -430,6 +483,9 @@ export async function handleAdminChatSettings(request, env) {
     const s = await getSettings(env);
     const out = {};
     for (const k of EDITABLE_SETTINGS) out[k] = s[k];
+    // ההתראות נשלחות למייל של חשבון מנהל-העל
+    out.notify_recipient = await getSuperAdminEmail(env) || '';
+    out.super_admin_set = !!s.super_admin_phone;
     return Response.json({ success: true, settings: out });
 }
 
@@ -437,10 +493,9 @@ export async function handleAdminChatTestEmail(request, env) {
     const body = await readBody(request);
     const denied = await requireAdmin(env, body);
     if (denied) return denied;
-    const s = await getSettings(env);
-    if (!s.notify_admin_email) return Response.json({ error: "לא הוגדרה כתובת מייל להתראות" }, { status: 400 });
-    const ok = await sendTestAdminEmail(env, s.notify_admin_email);
-    return ok ? Response.json({ success: true, message: `מייל בדיקה נשלח אל ${s.notify_admin_email}` }) : Response.json({ error: "שליחת המייל נכשלה" }, { status: 500 });
+    const r = await sendTestAdminEmail(env);
+    if (r.error) return Response.json({ error: r.error }, { status: 400 });
+    return r.ok ? Response.json({ success: true, message: `מייל בדיקה נשלח אל ${r.to}` }) : Response.json({ error: "שליחת המייל נכשלה" }, { status: 500 });
 }
 
 export async function handleAdminSendCustomEmail(request, env) {

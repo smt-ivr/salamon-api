@@ -53,7 +53,7 @@ async function readCredentials(request) {
 
 // שלב א': לפני הטיפול בבקשה (חשוב ליציאה, כי הטוקן נמחק בתוכה)
 export async function beginTracking(request, env, pathname, ip) {
-    if (!pathname.includes('/api/') || pathname.includes('/api/admin/') || pathname.includes('/api/verify/admin/')) return null;
+    if (!pathname.includes('/api/') || pathname.includes('/api/admin/') || pathname.includes('/api/verify/admin/') || pathname.endsWith('/api/chat/presence')) return null;
     const action = routeAction(pathname);
     const { userToken, body } = await readCredentials(request);
     if (!userToken && !action) return null;
@@ -159,12 +159,23 @@ export function isOnline(lastSeenAt) {
     return !!lastSeenAt && getMinutesSinceIsraelDbTime(lastSeenAt) <= ONLINE_MINUTES;
 }
 
+// מצב הלקוח: active = באתר ומול המסך, background = האתר פתוח בכרטיסייה אחרת, offline = לא באתר
+export function presenceStatus(row) {
+    if (!row || !isOnline(row.last_seen_at)) return 'offline';
+    if (row.page_state === 'offline' && row.page_state_at && row.page_state_at >= row.last_seen_at) return 'offline';
+    if (row.page_state === 'hidden' && row.page_state_at && getMinutesSinceIsraelDbTime(row.page_state_at) <= ONLINE_MINUTES * 5) return 'background';
+    return 'active';
+}
+
 export async function getPresenceMap(env, phones = null) {
     const rows = phones && phones.length
         ? (await env.DB.prepare(`SELECT * FROM user_presence WHERE phone IN (${phones.map(() => '?').join(',')})`).bind(...phones).all()).results
         : (await env.DB.prepare("SELECT * FROM user_presence").all()).results;
     const map = {};
-    for (const r of rows || []) map[r.phone] = { lastSeenAt: r.last_seen_at, online: isOnline(r.last_seen_at), lastLoginAt: r.last_login_at, lastLoginMethod: r.last_login_method, device: describeDevice(r.last_user_agent), ip: r.last_ip };
+    for (const r of rows || []) {
+        const status = presenceStatus(r);
+        map[r.phone] = { status, lastSeenAt: r.last_seen_at, online: status !== 'offline', lastLoginAt: r.last_login_at, lastLoginMethod: r.last_login_method, device: describeDevice(r.last_user_agent), ip: r.last_ip };
+    }
     return map;
 }
 
@@ -193,11 +204,12 @@ export async function handleAdminActivityOnline(request, env) {
         getAllNamesFromIni(env.YEMOT_TOKEN),
     ]);
 
+    const onlineRows = (online.results || []).filter(r => presenceStatus(r) !== 'offline');
     return Response.json({
         success: true,
-        online: (online.results || []).map(r => ({ phone: r.phone, name: names[r.phone] || '', lastSeenAt: r.last_seen_at, device: describeDevice(r.last_user_agent), ip: r.last_ip, lastLoginAt: r.last_login_at })),
+        online: onlineRows.map(r => ({ phone: r.phone, name: names[r.phone] || '', status: presenceStatus(r), lastSeenAt: r.last_seen_at, device: describeDevice(r.last_user_agent), ip: r.last_ip, lastLoginAt: r.last_login_at })),
         recentLogins: (recentLogins.results || []).map(e => presentEvent(e, names)),
-        stats: { onlineNow: (online.results || []).length, active24h: active24 ? active24.n : 0, loginsToday: logins ? logins.n : 0 },
+        stats: { onlineNow: onlineRows.length, activeNow: onlineRows.filter(r => presenceStatus(r) === 'active').length, active24h: active24 ? active24.n : 0, loginsToday: logins ? logins.n : 0 },
     });
 }
 
@@ -241,7 +253,7 @@ export async function handleAdminActivityUser(request, env) {
     return Response.json({
         success: true,
         presence: presence ? {
-            online: isOnline(presence.last_seen_at), lastSeenAt: presence.last_seen_at, lastLoginAt: presence.last_login_at,
+            status: presenceStatus(presence), online: presenceStatus(presence) !== 'offline', lastSeenAt: presence.last_seen_at, lastLoginAt: presence.last_login_at,
             lastLoginMethod: presence.last_login_method, device: describeDevice(presence.last_user_agent), ip: presence.last_ip,
         } : { online: false },
         sessions: sessions.results || [],

@@ -12,11 +12,12 @@ import { handlePhoneApiStats } from './phoneApi.js';
 import { handleGetSystemStats } from './stats.js';
 
 import {
-    handleUserGetChat, handleUserCheckUnread, handleUserSendMessage, handleUserMarkRead, handleUserDeleteMessage, handleUserTyping,
+    handleUserGetChat, handleUserCheckUnread, handleUserSendMessage, handleUserMarkRead, handleUserDeleteMessage, handleUserTyping, handleUserPresence, handleUserEmailLink,
     handleAdminGetConversations, handleAdminGetChat, handleAdminSendMessage, handleAdminMarkRead, handleAdminDeleteMessage as handleAdminDeleteChatMessage, handleAdminSendCustomEmail,
     handleAdminEditMessage, handleAdminTyping, handleAdminThreadMeta, handleAdminMarkUnread, handleAdminSearchMessages, handleAdminChatSettings, handleAdminChatTestEmail
 } from './chat.js';
 import { ensureSchema } from './schema.js';
+import { handleAccountSecurity } from './account.js';
 import { handleAdminLogin, handleAdminLoginWithUser, handleAdminMe, handleAdminLogout, handleAdminSessions, handleAdminAccount, handleAdminPresence, isMainAdmin, sessionExpired } from './adminAuth.js';
 import { beginTracking, finishTracking, handleAdminActivityOnline, handleAdminActivityFeed, handleAdminActivityUser, pruneActivity } from './activity.js';
 import { handleAdminNameLocksList, handleAdminNameLocksSave, handleAdminNameLocksDelete, handleAdminNameLocksEnforce, enforceNameLocks } from './nameLocks.js';
@@ -105,6 +106,9 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/chat/unread")) response = await handleUserCheckUnread(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) response = await handleUserSendMessage(request, env, ctx);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/typing")) response = await handleUserTyping(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/presence")) response = await handleUserPresence(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/link")) response = await handleUserEmailLink(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/account/security")) response = await handleAccountSecurity(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/read")) response = await handleUserMarkRead(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/delete")) response = await handleUserDeleteMessage(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/conversations")) response = await handleAdminGetConversations(request, env);
