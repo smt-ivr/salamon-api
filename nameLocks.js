@@ -7,7 +7,7 @@
 
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
 import { getAllNamesFromIni, updateNamesInIni } from './yemot.js';
-import { isMainAdmin, forbidden } from './adminAuth.js';
+import { isMainAdmin, forbidden, sessionExpired } from './adminAuth.js';
 import { logActivity } from './activity.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/;
@@ -62,14 +62,14 @@ export function describeLock(lock) {
 
 export async function handleAdminNameLocksList(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden();
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden();
     const map = await getLocksMap(env);
     return Response.json({ success: true, locks: Object.values(map) });
 }
 
 export async function handleAdminNameLocksSave(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden();
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden();
 
     const phones = [...new Set((Array.isArray(body.phones) ? body.phones : [body.phone]).map(p => String(p || '').trim()).filter(Boolean))];
     if (!phones.length) return Response.json({ error: "לא נבחרו מספרים לנעילה" }, { status: 400 });
@@ -112,7 +112,7 @@ export async function handleAdminNameLocksSave(request, env) {
 
 export async function handleAdminNameLocksDelete(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden();
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden();
     const phones = (Array.isArray(body.phones) ? body.phones : [body.phone]).map(p => String(p || '').trim()).filter(Boolean);
     if (!phones.length) return Response.json({ error: "לא נבחרו מספרים" }, { status: 400 });
     for (let i = 0; i < phones.length; i += 90) {
@@ -124,7 +124,7 @@ export async function handleAdminNameLocksDelete(request, env) {
 
 export async function handleAdminNameLocksEnforce(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden();
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden();
     const result = await enforceNameLocks(env);
     return Response.json({ success: true, ...result });
 }

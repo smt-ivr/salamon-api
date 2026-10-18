@@ -2,6 +2,7 @@
 import { checkPhoneStatus, getAllYemotUsers, getAllNamesFromIni, updateNameInIni, getNameFromIni } from './yemot.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
 import { authenticateUser } from './auth.js';
+import { isMainAdmin } from './adminAuth.js';
 import { getActiveLock, getLocksMap, syncLockedName, describeLock } from './nameLocks.js';
 
 // הרשאות שניתן להעניק לחברי צוות. הצ'אט והרשאת-העל שמורים למנהל הראשי בלבד.
@@ -15,11 +16,7 @@ function sanitizePermissions(value) {
 
 // בדיקת הרשאות למנהלי משנה (הפונקציה שודרגה להחזרת הודעות שגיאה מפורטות)
 async function verifyAdmin(env, body, requiredPermissions = null) {
-    if (body.adminToken && typeof body.adminToken === 'string' && body.adminToken.includes(':')) {
-        const [username, password] = body.adminToken.split(':');
-        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
-        if (admin) return { authorized: true };
-    }
+    if (body.adminToken && await isMainAdmin(env, body.adminToken)) return { authorized: true };
     if (body.userToken) {
         const user = await authenticateUser(env.DB, body.userToken);
         if (user && user.is_admin === 1) {
@@ -44,12 +41,7 @@ async function verifyAdmin(env, body, requiredPermissions = null) {
 
 // בדיקה האם זה המנהל הראשי (קוד מנהל)
 async function isPrimaryAdmin(env, body) {
-    if (body.adminToken && typeof body.adminToken === 'string' && body.adminToken.includes(':')) {
-        const [username, password] = body.adminToken.split(':');
-        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
-        return !!admin;
-    }
-    return false;
+    return !!body.adminToken && await isMainAdmin(env, body.adminToken);
 }
 
 // קבלת מזהה המנהל המבצע לצורך רישום בלוגים
@@ -92,15 +84,6 @@ export async function handleAdminGetAuditLogs(request, env) {
     } catch (e) {
         return Response.json({ error: e.message }, { status: 500 });
     }
-}
-
-export async function handleAdminLogin(request, env) {
-    const body = await request.json().catch(() => ({}));
-    const { username, password } = body;
-    if (!username || !password) return Response.json({ error: "חובה להזין שם משתמש וסיסמה" }, { status: 400 });
-    const admin = await env.DB.prepare("SELECT * FROM admins WHERE username = ? AND password = ?").bind(username, password).first();
-    if (!admin) return Response.json({ error: "שם משתמש או סיסמת מנהל שגויים" }, { status: 401 });
-    return Response.json({ success: true, message: "התחברת כמנהל בהצלחה", adminToken: `${admin.username}:${admin.password}` });
 }
 
 export async function handleAdminGetUsers(request, env) {

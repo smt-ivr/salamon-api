@@ -1,5 +1,6 @@
 // systemMessage.js
 import { authenticateUser } from './auth.js';
+import { isMainAdmin } from './adminAuth.js';
 import { getIsraelTimeForDB, getMinutesSinceIsraelDbTime } from './timeUtils.js';
 
 export async function handleGetSystemMessagesForUser(request, env, userIp) {
@@ -69,10 +70,7 @@ export async function handleGetSystemMessagesForUser(request, env, userIp) {
 export async function handleAdminListSystemMessages(request, env) {
     try {
         const body = await request.json().catch(() => ({}));
-        if (!body.adminToken || !body.adminToken.includes(':')) return Response.json({ error: "שגיאת אימות" }, { status: 401 });
-        const [username, adminPass] = body.adminToken.split(':');
-        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
-        if (!admin) return Response.json({ error: "לא מורשה" }, { status: 403 });
+        if (!(await isMainAdmin(env, body.adminToken))) return Response.json({ error: "לא מורשה" }, { status: 401 });
 
         // שליפת המודעות + משתמשים ייחודיים (DISTINCT) וסך חשיפות
         const { results: messages } = await env.DB.prepare(`
@@ -90,9 +88,7 @@ export async function handleAdminSaveSystemMessage(request, env) {
         const body = await request.json().catch(() => ({}));
         const { adminToken, id, title, htmlContent, imageUrl, bgColor, textColor, priority, expiresAt, isMandatory, closeCooldownSeconds, maxViewsPerUser, behaviorAfterLimit, viewIntervalMinutes, showViewCount } = body;
         
-        const [username, adminPass] = adminToken.split(':');
-        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
-        if (!admin) return Response.json({ error: "לא מורשה" }, { status: 403 });
+        if (!(await isMainAdmin(env, adminToken))) return Response.json({ error: "לא מורשה" }, { status: 401 });
         if (!title || !htmlContent) return Response.json({ error: "חובה להזין כותרת ותוכן" }, { status: 400 });
 
         const nowIsraelStr = getIsraelTimeForDB();
@@ -122,9 +118,8 @@ export async function handleAdminSaveSystemMessage(request, env) {
 export async function handleAdminDeleteSystemMessage(request, env) {
     try {
         const body = await request.json().catch(() => ({}));
-        const [username, adminPass] = body.adminToken.split(':');
-        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username=? AND password=?").bind(username, adminPass).first();
-        if (!admin || !body.id) return Response.json({ error: "שגיאה" }, { status: 400 });
+        if (!(await isMainAdmin(env, body.adminToken))) return Response.json({ error: "לא מורשה" }, { status: 401 });
+        if (!body.id) return Response.json({ error: "שגיאה" }, { status: 400 });
         await env.DB.prepare("DELETE FROM system_messages WHERE id=?").bind(body.id).run();
         return Response.json({ success: true });
     } catch (e) { return Response.json({ error: "שגיאה" }, { status: 500 }); }
@@ -133,9 +128,8 @@ export async function handleAdminDeleteSystemMessage(request, env) {
 export async function handleAdminGetAdLogs(request, env) {
     try {
         const body = await request.json().catch(() => ({}));
-        const [username, adminPass] = body.adminToken.split(':');
-        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username=? AND password=?").bind(username, adminPass).first();
-        if (!admin || !body.messageId) return Response.json({ error: "שגיאה" }, { status: 400 });
+        if (!(await isMainAdmin(env, body.adminToken))) return Response.json({ error: "לא מורשה" }, { status: 401 });
+        if (!body.messageId) return Response.json({ error: "שגיאה" }, { status: 400 });
 
         const { results: logs } = await env.DB.prepare(
             `SELECT phone, viewed_at, ip_address FROM system_message_logs WHERE message_id = ? ORDER BY viewed_at DESC LIMIT 200`

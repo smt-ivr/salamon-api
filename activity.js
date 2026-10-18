@@ -4,7 +4,7 @@
 
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, getMinutesSinceIsraelDbTime } from './timeUtils.js';
 import { getAllNamesFromIni } from './yemot.js';
-import { isMainAdmin, forbidden } from './adminAuth.js';
+import { isMainAdmin, forbidden, sessionExpired } from './adminAuth.js';
 
 export const ONLINE_MINUTES = 2;
 
@@ -179,7 +179,7 @@ function presentEvent(e, names) {
 
 export async function handleAdminActivityOnline(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden();
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden();
 
     const since = getFutureIsraelTimeForDB(-ONLINE_MINUTES);
     const dayAgo = getFutureIsraelTimeForDB(-24 * 60);
@@ -203,7 +203,7 @@ export async function handleAdminActivityOnline(request, env) {
 
 export async function handleAdminActivityFeed(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden();
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden();
 
     const where = [];
     const args = [];
@@ -224,7 +224,7 @@ export async function handleAdminActivityFeed(request, env) {
 
 export async function handleAdminActivityUser(request, env) {
     const body = await request.json().catch(() => ({}));
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden();
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden();
     if (!body.phone) return Response.json({ error: "חסר מספר טלפון" }, { status: 400 });
 
     const phone = String(body.phone);

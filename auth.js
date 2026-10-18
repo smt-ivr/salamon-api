@@ -183,6 +183,7 @@ export async function handleGetProfile(request, env) {
             authMethod: user.auth_method,
             tokenType: user.token_type,
             isAdmin: user.is_admin === 1,
+            isSuperAdmin: await env.DB.prepare("SELECT 1 FROM app_settings WHERE key = 'super_admin_phone' AND value = ?").bind(user.phone).first().then(r => !!r).catch(() => false),
             adminPermissions: user.admin_permissions || "",
             emailGloballyBlocked: emailGloballyBlocked
         }

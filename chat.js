@@ -6,8 +6,8 @@ import { authenticateUser } from './auth.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, getMinutesSinceIsraelDbTime } from './timeUtils.js';
 import { sendEmail, escapeHtml } from './emailService.js';
 import { getNameFromIni, getAllNamesFromIni } from './yemot.js';
-import { isMainAdmin, forbidden } from './adminAuth.js';
-import { getSettings, setSettings, SETTING_DEFAULTS } from './schema.js';
+import { isMainAdmin, forbidden, sessionExpired } from './adminAuth.js';
+import { getSettings, setSettings, EDITABLE_SETTINGS } from './schema.js';
 import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, decideCustomerEmail, sendCustomerReplyEmail, sendTestAdminEmail } from './chatNotify.js';
 
@@ -15,7 +15,18 @@ const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
 const PAGE_SIZE = 150;
 const USER_RATE_PER_MINUTE = 15;
-const ADMIN_ONLINE_MINUTES = 3;
+const PRESENCE_FRESH_SECONDS = 75;
+
+// מה הלקוח רשאי לראות על המנהל, לפי הגדרות הפרטיות
+function adminVisibility(settings) {
+    const showPresence = settings.admin_show_presence !== '0';
+    const online = showPresence && settings.admin_presence_state === 'online' && isFresh(settings.admin_presence_at, PRESENCE_FRESH_SECONDS);
+    return {
+        admin: { online, lastActiveAt: null },
+        showTyping: settings.admin_show_typing !== '0',
+        showReadReceipts: settings.admin_show_read_receipts !== '0',
+    };
+}
 
 const DELETED_TEXT = "🚫 ההודעה נמחקה";
 
@@ -86,16 +97,18 @@ export async function handleUserGetChat(request, env) {
             getSettings(env),
         ]);
         const replies = await attachReplies(env, rows);
+        const vis = adminVisibility(settings);
         const messages = rows.map(msg => ({
             id: msg.id, sender: msg.sender, text: msg.is_deleted === 1 ? DELETED_TEXT : msg.message_text,
-            isRead: msg.is_read === 1, isDeleted: msg.is_deleted === 1, createdAt: msg.created_at,
+            // כשאישורי הקריאה מוסתרים, הלקוח רואה רק "נשלח" על ההודעות שלו
+            isRead: msg.sender === 'user' && !vis.showReadReceipts ? false : msg.is_read === 1,
+            isDeleted: msg.is_deleted === 1, createdAt: msg.created_at,
             edited: isEdited(msg), replyTo: msg.reply_to ? (replies[msg.reply_to] || null) : null,
         }));
-        const adminLast = settings.admin_last_active_at || null;
         return Response.json({
             success: true, messages, hasMore,
-            adminTyping: isFresh(thread && thread.admin_typing_at, TYPING_SECONDS),
-            admin: { online: !!adminLast && getMinutesSinceIsraelDbTime(adminLast) <= ADMIN_ONLINE_MINUTES, lastActiveAt: adminLast },
+            adminTyping: vis.showTyping && isFresh(thread && thread.admin_typing_at, TYPING_SECONDS),
+            admin: vis.admin,
         });
     } catch (e) { return Response.json({ error: "שגיאה בשליפת ההודעות" }, { status: 500 }); }
 }
@@ -106,11 +119,13 @@ export async function handleUserCheckUnread(request, env) {
     if (error) return error;
 
     try {
-        const [countRes, thread] = await Promise.all([
+        const [countRes, thread, settings] = await Promise.all([
             env.DB.prepare("SELECT COUNT(*) as unread FROM chat_messages WHERE user_phone = ? AND sender = 'admin' AND is_read = 0 AND is_deleted = 0").bind(user.phone).first(),
             env.DB.prepare("SELECT admin_typing_at FROM chat_threads WHERE user_phone = ?").bind(user.phone).first(),
+            getSettings(env),
         ]);
-        return Response.json({ success: true, unreadCount: countRes.unread || 0, adminTyping: isFresh(thread && thread.admin_typing_at, TYPING_SECONDS) });
+        const vis = adminVisibility(settings);
+        return Response.json({ success: true, unreadCount: countRes.unread || 0, adminTyping: vis.showTyping && isFresh(thread && thread.admin_typing_at, TYPING_SECONDS) });
     } catch (e) { return Response.json({ error: "שגיאה בבדיקת הודעות" }, { status: 500 }); }
 }
 
@@ -175,7 +190,7 @@ export async function handleUserDeleteMessage(request, env) {
 // ==========================================
 
 async function requireAdmin(env, body) {
-    if (!(await isMainAdmin(env, body.adminToken))) return forbidden("הצ'אט זמין למנהל הראשי בלבד");
+    if (!(await isMainAdmin(env, body.adminToken))) return body.adminToken ? sessionExpired() : forbidden("הצ'אט זמין למנהל הראשי בלבד");
     // "active" נשלח רק כשהמנהל באמת פעיל מול המסך, כדי שהתראות המייל יידעו מתי הוא לא זמין
     if (body.active) await markAdminActive(env).catch(() => {});
     return null;
@@ -406,12 +421,15 @@ export async function handleAdminChatSettings(request, env) {
             if (!['auto', 'always', 'never'].includes(input.customer_email_mode)) return Response.json({ error: "מצב מייל לא חוקי" }, { status: 400 });
             values.customer_email_mode = input.customer_email_mode;
         }
+        for (const k of ['admin_show_presence', 'admin_show_typing', 'admin_show_read_receipts']) {
+            if (input[k] !== undefined) values[k] = input[k] ? '1' : '0';
+        }
         await setSettings(env, values, getIsraelTimeForDB());
     }
 
     const s = await getSettings(env);
     const out = {};
-    for (const k of Object.keys(SETTING_DEFAULTS)) out[k] = s[k];
+    for (const k of EDITABLE_SETTINGS) out[k] = s[k];
     return Response.json({ success: true, settings: out });
 }
 
