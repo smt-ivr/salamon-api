@@ -6,11 +6,12 @@ import { isMainAdmin } from './adminAuth.js';
 import { getActiveLock, getLocksMap, syncLockedName, describeLock } from './nameLocks.js';
 
 // הרשאות שניתן להעניק לחברי צוות. הצ'אט והרשאת-העל שמורים למנהל הראשי בלבד.
-const STAFF_PERMISSIONS = ['manage_users', 'manage_names', 'manage_ads', 'manage_system', 'delete_messages', 'require_google'];
+// לחברי צוות יש רק שתי הרשאות אפשריות: ספר טלפונים ומחיקת הודעות. כל השאר שמור למנהל הראשי.
+const STAFF_PERMISSIONS = ['manage_names', 'delete_messages'];
 
 function sanitizePermissions(value) {
     const list = String(value || '').split(',').map(p => p.trim()).filter(Boolean);
-    const expanded = list.includes('all') ? STAFF_PERMISSIONS.filter(p => p !== 'require_google').concat(list.filter(p => p === 'require_google')) : list;
+    const expanded = list.includes('all') ? STAFF_PERMISSIONS : list;
     return [...new Set(expanded.filter(p => STAFF_PERMISSIONS.includes(p)))].join(',');
 }
 
@@ -20,16 +21,12 @@ async function verifyAdmin(env, body, requiredPermissions = null) {
     if (body.userToken) {
         const user = await authenticateUser(env.DB, body.userToken);
         if (user && user.is_admin === 1) {
-            const perms = user.admin_permissions ? user.admin_permissions.split(',') : [];
-            
-            // בדיקת חובת גוגל: ההרשאה קיימת במשתמש, אך הפעולה בפועל נחסמת
-            if (perms.includes('require_google') && user.auth_method !== 'google' && user.auth_method !== 'master') {
-                return { authorized: false, error: "פעולה חסומה: יש להתחבר עם גוגל בלבד כדי לבצע פעולות ניהול." };
-            }
+            // רק ההרשאות שמותרות לצוות נחשבות, גם אם במסד נשמרו בעבר הרשאות רחבות יותר
+            const perms = sanitizePermissions(user.admin_permissions).split(',').filter(Boolean);
 
             if (requiredPermissions) {
                 const requiredArray = Array.isArray(requiredPermissions) ? requiredPermissions : [requiredPermissions];
-                const hasPerm = perms.includes('all') || requiredArray.some(p => perms.includes(p));
+                const hasPerm = requiredArray.some(p => perms.includes(p));
                 if (hasPerm) return { authorized: true };
                 return { authorized: false, error: "פעולה חסומה: אין לך את ההרשאות הנדרשות לביצוע פעולה זו." };
             }
@@ -63,12 +60,8 @@ async function logAdminAction(env, adminPhone, actionType, targetPhone, detailsB
 
 export async function handleAdminGetPermissions(request, env) {
     const permissions = [
-        { id: 'manage_users', label: 'ניהול משתמשים בסיסי', desc: 'פתיחה, עריכה ומחיקת משתמשים (ללא הרשאות הנהלה)' },
-        { id: 'manage_names', label: 'עדכון שמות (ימות המשיח)', desc: 'גישה לשינוי השם המוקרא בטלפון' },
-        { id: 'manage_ads', label: 'ניהול מודעות פופאפ', desc: 'הוספה והסרה של מודעות וקמפיינים' },
-        { id: 'manage_system', label: 'מסוף נתונים ולוגים', desc: 'גישה למסוף SQL ולוגי אבטחה' },
-        { id: 'delete_messages', label: 'מחיקת הודעות', desc: 'הרשאה למחיקת קבצי שמע של משתמשים אחרים' },
-        { id: 'require_google', label: 'חובת התחברות בגוגל (אבטחה)', desc: 'חוסם ביצוע פעולות ניהול למנהל זה אלא אם התחבר דרך חשבון גוגל' }
+        { id: 'manage_names', label: 'ספר טלפונים', desc: 'עדכון השמות המוקראים בטלפון (שמות נעולים חסומים לעריכה)' },
+        { id: 'delete_messages', label: 'מחיקת הודעות', desc: 'מחיקת הודעות שמע של משתמשים אחרים באתר' },
     ];
     return Response.json({ success: true, permissions });
 }
