@@ -1,6 +1,6 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
-import { handleAdminLogin, handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
+import { handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
 import { handleUploadMessage } from './upload.js';
@@ -17,6 +17,7 @@ import {
     handleAdminEditMessage, handleAdminTyping, handleAdminThreadMeta, handleAdminMarkUnread, handleAdminSearchMessages, handleAdminChatSettings, handleAdminChatTestEmail
 } from './chat.js';
 import { ensureSchema } from './schema.js';
+import { handleAdminLogin, handleAdminLoginWithUser, handleAdminMe, handleAdminLogout, handleAdminSessions, handleAdminAccount, handleAdminPresence, isMainAdmin, sessionExpired } from './adminAuth.js';
 import { beginTracking, finishTracking, handleAdminActivityOnline, handleAdminActivityFeed, handleAdminActivityUser, pruneActivity } from './activity.js';
 import { handleAdminNameLocksList, handleAdminNameLocksSave, handleAdminNameLocksDelete, handleAdminNameLocksEnforce, enforceNameLocks } from './nameLocks.js';
 
@@ -36,9 +37,17 @@ export default {
             tracking = await beginTracking(request, env, pathname, userIp).catch(e => { console.error('tracking', e); return null; });
 
             let response;
+            // חיבור מנהל שפג תוקפו: מחזירים 401 אחיד, כדי שמרכז השליטה יחזיר למסך הכניסה
+            const isAdminPath = pathname.includes('/api/admin/') || pathname.includes('/api/verify/admin/');
+            const publicAdminPath = /\/api\/admin\/(login|login\/user|logout|permissions)$/.test(pathname);
+            if (isAdminPath && !publicAdminPath && request.method === 'POST') {
+                const peek = await request.clone().json().catch(() => ({}));
+                if (peek.adminToken && !(await isMainAdmin(env, peek.adminToken))) response = sessionExpired();
+            }
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
 
-            if (pathname.endsWith("/api/phone/stats")) response = await handlePhoneApiStats(request, env);
+            if (response) { /* כבר נקבעה תשובה (חיבור מנהל לא תקף) */ }
+            else if (pathname.endsWith("/api/phone/stats")) response = await handlePhoneApiStats(request, env);
             
             else if (request.method === "POST" && pathname.endsWith("/api/system-message")) response = await handleGetSystemMessagesForUser(request, env, userIp);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/system-messages/list")) response = await handleAdminListSystemMessages(request, env);
@@ -126,11 +135,9 @@ export default {
                 else {
                     const body = await request.json().catch(() => ({}));
                     const adminToken = body.adminToken;
-                    if (!adminToken || !adminToken.includes(':')) response = Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
+                    if (!adminToken) response = Response.json({ error: "חסר אימות מנהל" }, { status: 401 });
                     else {
-                        const [username, adminPass] = adminToken.split(':');
-                        const admin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = ? AND password = ?").bind(username, adminPass).first();
-                        if (!admin) response = Response.json({ error: "הרשאות מנהל לא חוקיות" }, { status: 403 });
+                        if (!(await isMainAdmin(env, adminToken))) response = sessionExpired();
                         else {
                             if (pathname.endsWith("/api/verify/admin/logs")) response = Response.json(await verifySystem.getLogs(body.limit || 100, body.offset || 0));
                             else if (pathname.endsWith("/api/verify/admin/blocks")) response = Response.json(await verifySystem.getBlocks());
@@ -157,6 +164,13 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/unblock-email")) response = await handleUnblockEmail(request, env);
             
             else if (request.method === "POST" && pathname.endsWith("/api/admin/login")) response = await handleAdminLogin(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/login/user")) response = await handleAdminLoginWithUser(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/me")) response = await handleAdminMe(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/logout")) response = await handleAdminLogout(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/sessions")) response = await handleAdminSessions(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/account")) response = await handleAdminAccount(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/presence")) response = await handleAdminPresence(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/settings")) response = await handleAdminChatSettings(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/users")) response = await handleAdminGetUsers(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/yemot-names")) response = await handleAdminGetYemotNamesList(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/user-profile")) response = await handleAdminGetUserFullProfile(request, env);

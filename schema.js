@@ -57,6 +57,24 @@ const STATEMENTS = [
     )`,
 
     `CREATE INDEX IF NOT EXISTS idx_chat_messages_phone_id ON chat_messages (user_phone, id)`,
+
+    `CREATE TABLE IF NOT EXISTS admin_sessions (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        remember INTEGER DEFAULT 0,
+        created_at TEXT,
+        last_used_at TEXT,
+        expires_at TEXT,
+        ip TEXT,
+        user_agent TEXT
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS admin_login_attempts (
+        ip TEXT,
+        created_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_admin_login_attempts_ip ON admin_login_attempts (ip, created_at)`,
 ];
 
 // עמודות שנוספות לטבלאות קיימות. SQLite לא תומך ב-IF NOT EXISTS על עמודות, לכן כל אחת נבדקת בנפרד.
@@ -95,7 +113,20 @@ export const SETTING_DEFAULTS = {
     customer_email_mode: 'auto',
     customer_offline_minutes: '3',
     admin_last_active_at: '',
+    // פרטיות מול הלקוחות
+    admin_show_presence: '1',
+    admin_show_typing: '1',
+    admin_show_read_receipts: '1',
+    // מצב הנוכחות שהמרכז השליטה מדווח (online / away / offline)
+    admin_presence_state: '',
+    admin_presence_at: '',
+    // חשבון האתר היחיד שמורשה להיכנס למרכז השליטה כמנהל-על
+    super_admin_phone: '',
 };
+
+// הגדרות שהמנהל יכול לערוך ממסך ההגדרות
+export const EDITABLE_SETTINGS = ['notify_admin_enabled', 'notify_admin_email', 'notify_idle_minutes', 'notify_cooldown_minutes',
+    'customer_email_mode', 'customer_offline_minutes', 'admin_show_presence', 'admin_show_typing', 'admin_show_read_receipts'];
 
 export async function getSettings(env) {
     const { results } = await env.DB.prepare("SELECT key, value FROM app_settings").all();
