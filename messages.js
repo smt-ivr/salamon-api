@@ -1,7 +1,7 @@
 // messages.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { authenticateUser } from './auth.js'; 
-import { getIsraelTimeForDB } from './timeUtils.js';
+import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
 
 export async function handleGetMessages(request, env) {
     const body = await request.json();
@@ -95,6 +95,14 @@ export async function handleGetMessages(request, env) {
         }));
 
         const validMessages = messages.filter(Boolean);
+        // תיעוד "מי ראה": כל הודעה שהוצגה למשתמש ברשימה באתר
+        if (!user.is_master && validMessages.length) {
+            const nowStr = getIsraelTimeForDB();
+            await env.DB.batch(validMessages.map(m => env.DB.prepare(
+                `INSERT INTO message_views (file_id, phone, first_seen_at, last_seen_at, view_count) VALUES (?, ?, ?, ?, 1)
+                 ON CONFLICT(file_id, phone) DO UPDATE SET last_seen_at = excluded.last_seen_at, view_count = view_count + 1`
+            ).bind(m.name.split('.')[0], user.phone, nowStr, nowStr))).catch(err => console.error("views log", err));
+        }
         return Response.json({ success: true, messages: validMessages });
     } catch (error) {
         return Response.json({ error: "שגיאת שרת פנימית בעת קריאת התיקייה" }, { status: 500 });
@@ -151,11 +159,17 @@ export async function handleStreamMessage(request, env, ctx) {
     const fileName = `${fileId}.wav`;
 
     // השינוי: אם זה מאסטר - לא לרשום האזנה במסד הנתונים
-    if (!user.is_master) {
+    // נגן השמע מבקש את הקובץ בכמה חלקים (Range), לכן סופרים האזנה רק בבקשה שמתחילה מההתחלה,
+    // ולא יותר מפעם בשתי דקות לאותו אדם
+    const rangeStart = parseInt(((request.headers.get('Range') || '').match(/bytes=(\d+)/) || [])[1] || '0', 10);
+    if (!user.is_master && rangeStart === 0) {
         const nowIsraelStr = getIsraelTimeForDB();
         const logPromise = env.DB.prepare(
-            `INSERT OR IGNORE INTO message_listens (file_id, phone, listened_at) VALUES (?, ?, ?)`
-        ).bind(fileId.toString(), user.phone, nowIsraelStr).run().catch(err => console.error("DB Log Error:", err));
+            `INSERT INTO message_listens (file_id, phone, listened_at, listen_count, last_listened_at) VALUES (?, ?, ?, 1, ?)
+             ON CONFLICT(file_id, phone) DO UPDATE SET
+                listen_count = COALESCE(listen_count, 1) + CASE WHEN COALESCE(last_listened_at, listened_at) < ? THEN 1 ELSE 0 END,
+                last_listened_at = excluded.last_listened_at`
+        ).bind(fileId.toString(), user.phone, nowIsraelStr, nowIsraelStr, getFutureIsraelTimeForDB(-2)).run().catch(err => console.error("DB Log Error:", err));
         
         if (ctx && ctx.waitUntil) {
             ctx.waitUntil(logPromise);

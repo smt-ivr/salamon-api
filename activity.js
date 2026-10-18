@@ -53,7 +53,7 @@ async function readCredentials(request) {
 
 // שלב א': לפני הטיפול בבקשה (חשוב ליציאה, כי הטוקן נמחק בתוכה)
 export async function beginTracking(request, env, pathname, ip) {
-    if (!pathname.includes('/api/') || pathname.includes('/api/admin/') || pathname.includes('/api/verify/admin/') || pathname.endsWith('/api/chat/presence')) return null;
+    if (!pathname.includes('/api/') || pathname.includes('/api/admin/') || pathname.includes('/api/verify/admin/') || pathname.endsWith('/api/chat/presence') || pathname.includes('/api/m/')) return null;
     const action = routeAction(pathname);
     const { userToken, body } = await readCredentials(request);
     if (!userToken && !action) return null;

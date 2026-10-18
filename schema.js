@@ -90,6 +90,84 @@ const STATEMENTS = [
         used_user_agent TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS idx_chat_email_links_phone ON chat_email_links (phone, message_id)`,
+
+    // מערכת הדיוור: דיוורים, נמען-נמען (עם מעקב פתיחה/הקלקה) והקלקות לפי קישור
+    `CREATE TABLE IF NOT EXISTS mail_campaigns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject TEXT NOT NULL,
+        preheader TEXT,
+        design TEXT,
+        audience TEXT,
+        links TEXT,
+        status TEXT DEFAULT 'draft',
+        scheduled_at TEXT,
+        started_at TEXT,
+        sent_at TEXT,
+        total INTEGER DEFAULT 0,
+        sent_ok INTEGER DEFAULT 0,
+        sent_fail INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS mail_sends (
+        id TEXT PRIMARY KEY,
+        campaign_id INTEGER NOT NULL,
+        phone TEXT,
+        email TEXT NOT NULL,
+        name TEXT,
+        status TEXT DEFAULT 'pending',
+        error TEXT,
+        created_at TEXT,
+        sent_at TEXT,
+        opened_at TEXT,
+        open_count INTEGER DEFAULT 0,
+        clicked_at TEXT,
+        click_count INTEGER DEFAULT 0,
+        last_ip TEXT,
+        last_device TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_mail_sends_campaign ON mail_sends (campaign_id, status)`,
+    `CREATE TABLE IF NOT EXISTS mail_clicks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        send_id TEXT,
+        campaign_id INTEGER,
+        link_index INTEGER,
+        clicked_at TEXT,
+        ip TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_mail_clicks_campaign ON mail_clicks (campaign_id)`,
+
+    // קמפיינים: הקלקות וסגירות, וערכות עיצוב שמורות
+    `CREATE TABLE IF NOT EXISTS system_message_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL,
+        phone TEXT,
+        event TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        ip TEXT,
+        device TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_sm_events_msg ON system_message_events (message_id, event)`,
+    `CREATE INDEX IF NOT EXISTS idx_sm_logs_msg ON system_message_logs (message_id, phone)`,
+    `CREATE TABLE IF NOT EXISTS ad_designs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        bg_color TEXT,
+        text_color TEXT,
+        design TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )`,
+
+    // הודעות קוליות: מי ראה את ההודעה ברשימה באתר
+    `CREATE TABLE IF NOT EXISTS message_views (
+        file_id TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        first_seen_at TEXT,
+        last_seen_at TEXT,
+        view_count INTEGER DEFAULT 1,
+        PRIMARY KEY (file_id, phone)
+    )`,
 ];
 
 // עמודות שנוספות לטבלאות קיימות. SQLite לא תומך ב-IF NOT EXISTS על עמודות, לכן כל אחת נבדקת בנפרד.
@@ -99,6 +177,21 @@ const COLUMNS = [
     // מצב הלשונית של הלקוח: active / hidden / offline
     ['user_presence', 'page_state', 'TEXT'],
     ['user_presence', 'page_state_at', 'TEXT'],
+    // מחיקה רכה בצ'אט: עותק שרק המנהל רואה, לשחזור
+    ['chat_messages', 'deleted_text', 'TEXT'],
+    ['chat_messages', 'deleted_at', 'TEXT'],
+    // האזנות באתר: כמה פעמים ומתי לאחרונה (השורה נוצרת בהאזנה הראשונה)
+    ['message_listens', 'listen_count', 'INTEGER DEFAULT 1'],
+    ['message_listens', 'last_listened_at', 'TEXT'],
+    // קמפיינים מתקדמים
+    ['system_messages', 'placement', 'TEXT'],
+    ['system_messages', 'starts_at', 'TEXT'],
+    ['system_messages', 'is_paused', 'INTEGER DEFAULT 0'],
+    ['system_messages', 'audience', 'TEXT'],
+    ['system_messages', 'cta_label', 'TEXT'],
+    ['system_messages', 'cta_url', 'TEXT'],
+    ['system_messages', 'design', 'TEXT'],
+    ['system_message_logs', 'device', 'TEXT'],
 ];
 
 let ready = null;
@@ -109,7 +202,8 @@ export function ensureSchema(env) {
             await env.DB.batch(STATEMENTS.map(sql => env.DB.prepare(sql)));
             for (const [table, column, type] of COLUMNS) {
                 const info = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
-                if (!(info.results || []).some(c => c.name === column)) {
+                const cols = info.results || [];
+                if (cols.length && !cols.some(c => c.name === column)) {
                     await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
                 }
             }
