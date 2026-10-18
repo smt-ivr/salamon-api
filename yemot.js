@@ -108,9 +108,12 @@ export async function updateNameInIni(phone, newName, token) {
             }
             
             newContents = updatedLines.join('\n');
-        } else {
-            // אם הקובץ לא היה קיים או שהתקבלה שגיאה בקריאה, צור מחדש
+        } else if (data.responseStatus === 'OK') {
+            // הקובץ קיים אך ריק
             newContents = `${phone}=${newName}`;
+        } else {
+            // שגיאה בקריאה: לא כותבים, אחרת הקובץ כולו יידרס בשורה אחת וכל השמות יימחקו
+            return { responseStatus: 'ERROR', message: 'קריאת קובץ השמות נכשלה' };
         }
         
         const txtFormData = new FormData();
@@ -125,4 +128,30 @@ export async function updateNameInIni(phone, newName, token) {
         console.error("שגיאה בעדכון השם בימות:", e);
         return { responseStatus: 'ERROR', message: e.message };
     }
+}
+
+// עדכון של כמה שמות בבת אחת בקובץ השמות (קריאה אחת וכתיבה אחת) - משמש לאכיפת נעילות
+export async function updateNamesInIni(updates, token) {
+    const phones = Object.keys(updates);
+    if (!phones.length) return { responseStatus: 'OK' };
+    const getUrl = `https://www.call2all.co.il/ym/api/GetTextFile?token=${token}&what=ivr2:/EnterID/EnterIDValName.ini`;
+    const response = await fetch(getUrl);
+    const data = await response.json();
+    if (data.responseStatus !== 'OK') return { responseStatus: 'ERROR', message: 'קריאת קובץ השמות נכשלה' };
+
+    const pending = new Set(phones);
+    const lines = String(data.contents || '').split(/\r?\n/).map(line => {
+        const phone = (line.split('=')[0] || '').trim();
+        if (pending.has(phone)) { pending.delete(phone); return `${phone}=${updates[phone]}`; }
+        return line;
+    });
+    while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+    for (const phone of pending) lines.push(`${phone}=${updates[phone]}`);
+
+    const form = new FormData();
+    form.append('token', token);
+    form.append('what', 'ivr2:/EnterID/EnterIDValName.ini');
+    form.append('contents', lines.join('\n'));
+    const uploadRes = await fetch('https://www.call2all.co.il/ym/api/UploadTextFile', { method: 'POST', body: form });
+    return uploadRes.json();
 }

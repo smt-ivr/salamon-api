@@ -2,6 +2,16 @@
 import { checkPhoneStatus, getAllYemotUsers, getAllNamesFromIni, updateNameInIni, getNameFromIni } from './yemot.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB } from './timeUtils.js';
 import { authenticateUser } from './auth.js';
+import { getActiveLock, getLocksMap, syncLockedName, describeLock } from './nameLocks.js';
+
+// הרשאות שניתן להעניק לחברי צוות. הצ'אט והרשאת-העל שמורים למנהל הראשי בלבד.
+const STAFF_PERMISSIONS = ['manage_users', 'manage_names', 'manage_ads', 'manage_system', 'delete_messages', 'require_google'];
+
+function sanitizePermissions(value) {
+    const list = String(value || '').split(',').map(p => p.trim()).filter(Boolean);
+    const expanded = list.includes('all') ? STAFF_PERMISSIONS.filter(p => p !== 'require_google').concat(list.filter(p => p === 'require_google')) : list;
+    return [...new Set(expanded.filter(p => STAFF_PERMISSIONS.includes(p)))].join(',');
+}
 
 // בדיקת הרשאות למנהלי משנה (הפונקציה שודרגה להחזרת הודעות שגיאה מפורטות)
 async function verifyAdmin(env, body, requiredPermissions = null) {
@@ -63,12 +73,10 @@ export async function handleAdminGetPermissions(request, env) {
     const permissions = [
         { id: 'manage_users', label: 'ניהול משתמשים בסיסי', desc: 'פתיחה, עריכה ומחיקת משתמשים (ללא הרשאות הנהלה)' },
         { id: 'manage_names', label: 'עדכון שמות (ימות המשיח)', desc: 'גישה לשינוי השם המוקרא בטלפון' },
-        { id: 'manage_chat', label: 'מענה בצ\'אט', desc: 'מענה לפניות של לקוחות דרך האתר' },
         { id: 'manage_ads', label: 'ניהול מודעות פופאפ', desc: 'הוספה והסרה של מודעות וקמפיינים' },
         { id: 'manage_system', label: 'מסוף נתונים ולוגים', desc: 'גישה למסוף SQL ולוגי אבטחה' },
         { id: 'delete_messages', label: 'מחיקת הודעות', desc: 'הרשאה למחיקת קבצי שמע של משתמשים אחרים' },
-        { id: 'require_google', label: 'חובת התחברות בגוגל (אבטחה)', desc: 'חוסם ביצוע פעולות ניהול למנהל זה אלא אם התחבר דרך חשבון גוגל' },
-        { id: 'all', label: 'מנהל-על (הכל)', desc: 'גישה מלאה לכל המודולים במערכת החכמה' }
+        { id: 'require_google', label: 'חובת התחברות בגוגל (אבטחה)', desc: 'חוסם ביצוע פעולות ניהול למנהל זה אלא אם התחבר דרך חשבון גוגל' }
     ];
     return Response.json({ success: true, permissions });
 }
@@ -171,12 +179,14 @@ export async function handleAdminGetYemotNamesList(request, env) {
 
         const protectedSet = new Set(protectedPhones);
         const isMainAdmin = await isPrimaryAdmin(env, body);
+        const locks = await getLocksMap(env).catch(() => ({}));
 
         const list = yemotUsers.map(u => ({
             phone: u.phone,
             active: u.active,
             name: namesMap[u.phone] || "",
-            isProtected: protectedSet.has(u.phone)
+            isProtected: protectedSet.has(u.phone),
+            lock: locks[u.phone] || null
         }));
 
         return Response.json({ success: true, list, isMainAdmin });
@@ -223,7 +233,7 @@ export async function handleAdminUpdateUser(request, env) {
         }
 
         const intentIsAdmin = isAdmin === undefined ? (user.is_admin ?? 0) : (isAdmin ? 1 : 0);
-        const intentAdminPerms = adminPermissions === undefined ? (user.admin_permissions || "") : adminPermissions;
+        const intentAdminPerms = adminPermissions === undefined ? (user.admin_permissions || "") : sanitizePermissions(adminPermissions);
         const finalIsProtected = isMainAdmin && isProtected !== undefined ? (isProtected ? 1 : 0) : (user.is_protected ?? 0);
 
         if (!isMainAdmin && (intentIsAdmin !== (user.is_admin ?? 0) || intentAdminPerms !== (user.admin_permissions || ""))) {
@@ -288,6 +298,11 @@ export async function handleAdminUpdateYemotName(request, env) {
             return Response.json({ error: "פעולה חסומה: משתמש זה מוגן מעריכה. רק מנהל ראשי רשאי לעדכן את שמו." }, { status: 403 });
         }
 
+        const lock = await getActiveLock(env, phone);
+        if (lock && !isMainAdmin) {
+            return Response.json({ error: describeLock(lock) }, { status: 403 });
+        }
+
         const adminPhone = await getPerformingAdminPhone(env, body);
         const oldNameStr = await getNameFromIni(phone, env.YEMOT_TOKEN) || "לא הוגדר בעבר";
 
@@ -298,6 +313,7 @@ export async function handleAdminUpdateYemotName(request, env) {
         const result = await updateNameInIni(phone, newName, env.YEMOT_TOKEN);
         
         if (result && result.responseStatus === 'OK') {
+            if (isMainAdmin) await syncLockedName(env, phone, newName);
             if (!isMainAdmin) {
                 await logAdminAction(env, adminPhone, 'UPDATE_NAME', phone, { name: oldNameStr }, { name: newName });
             }
@@ -348,7 +364,7 @@ export async function handleAdminCreateUser(request, env) {
         await env.DB.prepare(
             `INSERT INTO users (phone, email, password, can_record, can_upload, can_tzintuk, receive_emails, google_login_only, can_listen, listen_whitelist, listen_blacklist, profile_picture_url, lock_profile_picture, created_at, is_admin, admin_permissions, is_protected) 
              VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, 0, ?, ?, ?, ?)`
-        ).bind(phone, finalEmail, password, canRecord?1:0, canUpload?1:0, canTzintuk?1:0, receiveEmails?1:0, canListen?1:0, listenWhitelist||'', listenBlacklist||'', nowIsraelStr, isAdmin?1:0, adminPermissions||'', isProtected?1:0).run();
+        ).bind(phone, finalEmail, password, canRecord?1:0, canUpload?1:0, canTzintuk?1:0, receiveEmails?1:0, canListen?1:0, listenWhitelist||'', listenBlacklist||'', nowIsraelStr, isAdmin?1:0, sanitizePermissions(adminPermissions), isProtected?1:0).run();
 
         if (!isMainAdmin) {
             const adminPhone = await getPerformingAdminPhone(env, body);
