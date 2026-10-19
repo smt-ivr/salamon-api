@@ -8,6 +8,7 @@ import { processTzintukRequest } from './tzintuk.js';
 import { handleCheckDeleteEligibility, handleDeleteMessage } from './delete.js';
 import { handleGetSystemMessagesForUser, handleAdminListSystemMessages, handleAdminSaveSystemMessage, handleAdminDeleteSystemMessage, handleAdminGetAdLogs, handleSystemMessageEvent, handleAdminSystemMessageAction, handleAdminAdDesigns } from './systemMessage.js';
 import { handleAdminMailAudience, handleAdminMailPreview, handleAdminMailTest, handleAdminMailSend, handleAdminMailList, handleAdminMailGet, handleAdminMailDelete, handleAdminMailCancel, handleMailOpen, handleMailClick, processScheduledMail } from './mail.js';
+import { handleV2Config, handleV2Prefs, handleV2Audience, handleAdminV2Settings } from './v2.js';
 import { handleAdminVoiceList, handleAdminVoicePhoneStats, handleAdminVoiceAudience } from './voice.js';
 import { handleGetListenStats } from './listenStats.js';
 import { handlePhoneApiStats } from './phoneApi.js';
@@ -72,6 +73,10 @@ export default {
             else if (request.method === "GET" && /\/api\/m\/o\/ms_[a-f0-9]+\.gif$/.test(pathname)) response = await handleMailOpen(request, env, userIp);
             else if (request.method === "GET" && /\/api\/m\/c\/ms_[a-f0-9]+\/\d+$/.test(pathname)) response = await handleMailClick(request, env, userIp);
 
+            else if (request.method === "POST" && pathname.endsWith("/api/v2/config")) response = await handleV2Config(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/v2/prefs")) response = await handleV2Prefs(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/v2/audience")) response = await handleV2Audience(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/v2/settings")) response = await handleAdminV2Settings(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/list")) response = await handleAdminVoiceList(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/phone-stats")) response = await handleAdminVoicePhoneStats(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/audience")) response = await handleAdminVoiceAudience(request, env);

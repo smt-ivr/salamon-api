@@ -159,6 +159,15 @@ const STATEMENTS = [
         updated_at TEXT
     )`,
 
+    // העדפות אישיות של הגרסה החדשה (מסונכרנות בין מכשירים)
+    `CREATE TABLE IF NOT EXISTS user_prefs (
+        phone TEXT PRIMARY KEY,
+        prefs TEXT,
+        updated_at TEXT,
+        last_v2_at TEXT,
+        v2_opens INTEGER DEFAULT 0
+    )`,
+
     // הודעות קוליות: מי ראה את ההודעה ברשימה באתר
     `CREATE TABLE IF NOT EXISTS message_views (
         file_id TEXT NOT NULL,
