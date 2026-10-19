@@ -51,29 +51,54 @@ function parseDates(value) {
     return out.sort();
 }
 
-// פענוח קובץ נתוני ההאזנה: ListenAmount ושורה לכל טלפון
+// פענוח קובץ נתוני ההאזנה: ListenAmount ושורה (או קבוצת שורות) לכל טלפון.
+// הפענוח סובלני לכמה מבנים: "טלפון=תאריך", "מפתח=ערך" שמכיל טלפון, ומקטעים בסגנון [..] עם Phone=/Date=.
 export function parseListeningIni(text) {
     const result = { amount: 0, listeners: [] };
     if (!text) return result;
     const byPhone = {};
-    for (const line of String(text).split(/\r?\n/)) {
-        const eq = line.indexOf('=');
-        if (eq < 1) continue;
-        const key = line.slice(0, eq).trim();
-        const value = line.slice(eq + 1).trim();
-        if (/^ListenAmount$/i.test(key)) { result.amount = parseInt(value, 10) || 0; continue; }
-        const keyPhone = normPhone(key.split(/[-_.]/)[0]);
-        const valPhone = (value.match(/(?:^|\D)(0\d{8,9}|972\d{8,9})(?:\D|$)/) || [])[1];
-        const phone = keyPhone.length >= 9 && keyPhone.length <= 12 ? keyPhone : normPhone(valPhone);
-        if (!phone || phone.length < 9) continue;
-        const times = parseDates(value);
-        const countMatch = value.match(/^(\d{1,4})$/) || value.match(/(?:amount|count|times)\D{0,3}(\d{1,4})/i);
+    const PHONE_RE = /(?:^|[^\d])((?:972|0)5\d{8}|(?:972|0)[2-9]\d{7,8}|0\d{8,9})(?![\d])/g;
+    const add = (phone, times, count, raw) => {
+        phone = normPhone(phone);
+        if (phone.length < 9 || phone.length > 10) return;
         const p = byPhone[phone] = byPhone[phone] || { phone, times: [], count: 0, raw: '' };
         p.times.push(...times);
-        p.count += countMatch && !times.length ? parseInt(countMatch[1], 10) : Math.max(times.length, 1);
-        p.raw = (p.raw ? p.raw + ' | ' : '') + value.slice(0, 120);
+        p.count += count || Math.max(times.length, 1);
+        if (raw) p.raw = (p.raw ? p.raw + ' | ' : '') + raw.slice(0, 120);
+    };
+    const phonesIn = s => { const out = []; let m; PHONE_RE.lastIndex = 0; while ((m = PHONE_RE.exec(s))) out.push(m[1]); return [...new Set(out)]; };
+
+    let section = null;
+    const flush = () => {
+        if (section && section.phones.length) for (const ph of section.phones) add(ph, section.times, section.count, section.raw);
+        section = null;
+    };
+    for (const rawLine of String(text).split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        if (/^\[.*\]$/.test(line)) { flush(); section = { phones: phonesIn(line), times: [], count: 0, raw: line }; continue; }
+        const eq = line.indexOf('=');
+        const key = eq > 0 ? line.slice(0, eq).trim() : '';
+        const value = eq > 0 ? line.slice(eq + 1).trim() : line;
+        if (/^ListenAmount$/i.test(key)) { result.amount = parseInt(value, 10) || 0; continue; }
+        if (section) {
+            section.phones.push(...phonesIn(line).filter(p => !section.phones.includes(p)));
+            section.times.push(...parseDates(value));
+            if (/count|amount|times|כמות/i.test(key) && /^\d+$/.test(value)) section.count = parseInt(value, 10);
+            section.raw += ' ' + line;
+            continue;
+        }
+        const phones = phonesIn(key).length ? phonesIn(key) : phonesIn(value);
+        if (!phones.length) continue;
+        const times = parseDates(value);
+        const cnt = !times.length && /^\d{1,4}$/.test(value) ? parseInt(value, 10) : 0;
+        for (const ph of phones) add(ph, times, cnt, times.length ? '' : value);
     }
-    result.listeners = Object.values(byPhone).map(p => ({ ...p, times: [...new Set(p.times)].sort(), first: p.times.sort()[0] || null, last: p.times.sort().slice(-1)[0] || null }));
+    flush();
+    result.listeners = Object.values(byPhone).map(p => {
+        const times = [...new Set(p.times)].sort();
+        return { ...p, times, first: times[0] || null, last: times[times.length - 1] || null };
+    });
     if (!result.amount) result.amount = result.listeners.length;
     return result;
 }
@@ -161,6 +186,11 @@ export async function handleAdminVoiceAudience(request, env) {
     if (denied) return denied;
     const fileId = String(body.fileId || '');
     if (!/^\d+$/.test(fileId)) return Response.json({ error: "מזהה הודעה לא חוקי" }, { status: 400 });
+    return Response.json({ success: true, ...(await buildAudience(env, fileId, true)) });
+}
+
+// משמש גם את מרכז השליטה וגם את מנהל-העל באתר החדש
+export async function buildAudience(env, fileId, withRaw = false) {
 
     const [views, listens, users, iniText, txt, names] = await Promise.all([
         env.DB.prepare("SELECT phone, first_seen_at, last_seen_at, view_count FROM message_views WHERE file_id = ?").bind(fileId).all(),
@@ -191,8 +221,9 @@ export async function handleAdminVoiceAudience(request, env) {
     const notHeard = [...everyone].filter(p => !heard.has(p) && p !== recorder.phone).slice(0, 3000)
         .map(p => ({ phone: p, name: names[p] || '', hasAccount: accounts.has(p), sawOnSite: !!(people[p] && people[p].site) }));
 
-    return Response.json({
-        success: true, fileId,
+    return {
+        fileId,
+        raw: withRaw ? (iniText || '').slice(0, 20000) : undefined,
         recorder: { ...recorder, displayName: recorder.name || names[recorder.phone] || recorder.phone },
         phone: { available: iniText !== null, amount: phoneLog.amount, detailed: phoneLog.listeners.length > 0 },
         totals: {
@@ -202,5 +233,5 @@ export async function handleAdminVoiceAudience(request, env) {
             reached: heard.size,
         },
         people: list, notHeard,
-    });
+    };
 }

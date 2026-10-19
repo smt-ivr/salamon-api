@@ -95,6 +95,20 @@ export async function handleGetMessages(request, env) {
         }));
 
         const validMessages = messages.filter(Boolean);
+        // מה המשתמש עצמו כבר שמע (להצגת "חדש" באתר)
+        if (validMessages.length) {
+            const ids = validMessages.map(m => m.name.split('.')[0]);
+            const { results: mine } = await env.DB.prepare(`SELECT file_id, COALESCE(listen_count, 1) AS c, COALESCE(last_listened_at, listened_at) AS last FROM message_listens WHERE phone = ? AND file_id IN (${ids.map(() => '?').join(',')})`)
+                .bind(user.phone, ...ids).all().catch(() => ({ results: [] }));
+            const heard = {};
+            for (const r of mine || []) heard[r.file_id] = r;
+            for (const m of validMessages) {
+                const h = heard[m.name.split('.')[0]];
+                m.heardByMe = !!h;
+                m.myListens = h ? h.c : 0;
+                m.lastHeardAt = h ? h.last : null;
+            }
+        }
         // תיעוד "מי ראה": כל הודעה שהוצגה למשתמש ברשימה באתר
         if (!user.is_master && validMessages.length) {
             const nowStr = getIsraelTimeForDB();
