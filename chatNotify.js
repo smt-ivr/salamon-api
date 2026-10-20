@@ -9,6 +9,7 @@ import { sendEmail, escapeHtml } from './emailService.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, getMinutesSinceIsraelDbTime, isPastIsraelTime } from './timeUtils.js';
 import { getSettings, setSettings } from './schema.js';
 import { getNameFromIni } from './yemot.js';
+import { messagePreview } from './chatFiles.js';
 
 const ADMIN_CHAT_URL = 'https://smti.uk/salamon/admin#chat/';
 const SITE_URL = 'https://smti.uk/salamon';
@@ -139,10 +140,11 @@ export async function maybeNotifyAdmin(env, phone) {
     }
 
     const [{ results: unread }, name] = await Promise.all([
-        env.DB.prepare("SELECT message_text, created_at FROM chat_messages WHERE user_phone = ? AND sender = 'user' AND is_read = 0 AND is_deleted = 0 ORDER BY id DESC LIMIT 5").bind(phone).all(),
+        env.DB.prepare("SELECT message_text, file_key, file_name, file_type, created_at FROM chat_messages WHERE user_phone = ? AND sender = 'user' AND is_read = 0 AND is_deleted = 0 ORDER BY id DESC LIMIT 5").bind(phone).all(),
         getNameFromIni(phone, env.YEMOT_TOKEN).catch(() => null),
     ]);
-    const msgs = (unread || []).reverse();
+    // הודעה עם קובץ מוצגת במייל כשם הקובץ (הקובץ עצמו נפתח בצ'אט)
+    const msgs = (unread || []).reverse().map(m => ({ ...m, message_text: messagePreview(m) }));
     if (!msgs.length) return { sent: false, reason: 'nothing_unread' };
 
     const who = name || phone;
@@ -189,10 +191,11 @@ export async function canEmailCustomer(env, phone) {
 }
 
 export async function sendCustomerMessageEmail(env, phone, messageId, email) {
-    const msg = await env.DB.prepare("SELECT id, message_text, created_at FROM chat_messages WHERE id = ? AND user_phone = ? AND sender = 'admin'").bind(messageId, phone).first();
+    const msg = await env.DB.prepare("SELECT id, message_text, file_key, file_name, file_type, created_at FROM chat_messages WHERE id = ? AND user_phone = ? AND sender = 'admin'").bind(messageId, phone).first();
     if (!msg) return false;
+    msg.message_text = messagePreview(msg);
     const [lastUser, name] = await Promise.all([
-        env.DB.prepare("SELECT message_text FROM chat_messages WHERE user_phone = ? AND sender = 'user' AND is_deleted = 0 AND id < ? ORDER BY id DESC LIMIT 1").bind(phone, messageId).first(),
+        env.DB.prepare("SELECT message_text, file_key, file_name, file_type FROM chat_messages WHERE user_phone = ? AND sender = 'user' AND is_deleted = 0 AND id < ? ORDER BY id DESC LIMIT 1").bind(phone, messageId).first(),
         getNameFromIni(phone, env.YEMOT_TOKEN).catch(() => null),
     ]);
 
@@ -206,7 +209,7 @@ export async function sendCustomerMessageEmail(env, phone, messageId, email) {
     const greeting = name ? `שלום ${escapeHtml(name)},` : 'שלום,';
     const body = `
         <p style="margin:0;">${greeting}<br>צוות עכשיו סלומון השיב לך בצ'אט:</p>
-        ${messageCard({ from: 'צוות עכשיו סלומון', time: formatTime(msg.created_at), text: msg.message_text, quote: lastUser ? { label: 'ההודעה שלך', text: lastUser.message_text } : null })}`;
+        ${messageCard({ from: 'צוות עכשיו סלומון', time: formatTime(msg.created_at), text: msg.message_text, quote: lastUser ? { label: 'ההודעה שלך', text: messagePreview(lastUser) } : null })}`;
     const html = layout({
         preheader: String(msg.message_text).slice(0, 110),
         eyebrow: 'הודעה חדשה בצ\'אט', title: 'יש לך תשובה מצוות עכשיו סלומון', body,

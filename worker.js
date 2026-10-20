@@ -17,8 +17,10 @@ import { handleGetSystemStats } from './stats.js';
 import {
     handleUserGetChat, handleUserCheckUnread, handleUserSendMessage, handleUserMarkRead, handleUserDeleteMessage, handleUserTyping, handleUserPresence, handleUserEmailLink,
     handleAdminGetConversations, handleAdminGetChat, handleAdminSendMessage, handleAdminMarkRead, handleAdminDeleteMessage as handleAdminDeleteChatMessage, handleAdminRestoreMessage, handleAdminPurgeChat, handleAdminSendCustomEmail,
-    handleAdminEditMessage, handleAdminTyping, handleAdminThreadMeta, handleAdminMarkUnread, handleAdminSearchMessages, handleAdminChatSettings, handleAdminChatTestEmail
+    handleAdminEditMessage, handleAdminTyping, handleAdminThreadMeta, handleAdminMarkUnread, handleAdminSearchMessages, handleAdminChatSettings, handleAdminChatTestEmail,
+    handleUserSendFile, handleAdminSendFile
 } from './chat.js';
+import { handleChatFile } from './chatFiles.js';
 import { ensureSchema } from './schema.js';
 import { handleAccountSecurity } from './account.js';
 import { handleAdminLogin, handleAdminLoginWithUser, handleAdminMe, handleAdminLogout, handleAdminSessions, handleAdminAccount, handleAdminPresence, isMainAdmin, sessionExpired } from './adminAuth.js';
@@ -130,6 +132,8 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/chat/list")) response = await handleUserGetChat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/unread")) response = await handleUserCheckUnread(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) response = await handleUserSendMessage(request, env, ctx);
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/send-file")) response = await handleUserSendFile(request, env, ctx);
+            else if ((request.method === "GET" || request.method === "HEAD") && pathname.includes("/api/chat/file/")) response = await handleChatFile(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/typing")) response = await handleUserTyping(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/presence")) response = await handleUserPresence(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/link")) response = await handleUserEmailLink(request, env);
@@ -139,6 +143,7 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/conversations")) response = await handleAdminGetConversations(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/list")) response = await handleAdminGetChat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/send")) response = await handleAdminSendMessage(request, env, ctx);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/send-file")) response = await handleAdminSendFile(request, env, ctx);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/edit")) response = await handleAdminEditMessage(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/typing")) response = await handleAdminTyping(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/chat/meta")) response = await handleAdminThreadMeta(request, env);
