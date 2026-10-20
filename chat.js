@@ -11,6 +11,7 @@ import { getSettings, setSettings, EDITABLE_SETTINGS } from './schema.js';
 import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
 import { logActivity } from './activity.js';
+import { readUpload, storeFile, removeFiles, fileInfo, apiBaseOf, messagePreview, userFileQuotaExceeded } from './chatFiles.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -62,9 +63,9 @@ async function upsertThread(env, phone, fields) {
 async function attachReplies(env, rows) {
     const ids = [...new Set(rows.map(r => r.reply_to).filter(Boolean))];
     if (!ids.length) return {};
-    const { results } = await env.DB.prepare(`SELECT id, sender, message_text, is_deleted FROM chat_messages WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+    const { results } = await env.DB.prepare(`SELECT id, sender, message_text, is_deleted, file_key, file_name, file_type FROM chat_messages WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
     const map = {};
-    for (const r of results || []) map[r.id] = { id: r.id, sender: r.sender, text: r.is_deleted === 1 ? DELETED_TEXT : String(r.message_text || '').slice(0, 200) };
+    for (const r of results || []) map[r.id] = { id: r.id, sender: r.sender, text: r.is_deleted === 1 ? DELETED_TEXT : messagePreview(r).slice(0, 200) };
     return map;
 }
 
@@ -99,12 +100,14 @@ export async function handleUserGetChat(request, env) {
         ]);
         const replies = await attachReplies(env, rows);
         const vis = adminVisibility(settings);
+        const apiBase = apiBaseOf(request);
         const messages = rows.map(msg => ({
             id: msg.id, sender: msg.sender, text: msg.is_deleted === 1 ? DELETED_TEXT : msg.message_text,
             // כשאישורי הקריאה מוסתרים, הלקוח רואה רק "נשלח" על ההודעות שלו
             isRead: msg.sender === 'user' && !vis.showReadReceipts ? false : msg.is_read === 1,
             isDeleted: msg.is_deleted === 1, createdAt: msg.created_at,
             edited: isEdited(msg), replyTo: msg.reply_to ? (replies[msg.reply_to] || null) : null,
+            file: fileInfo(msg, apiBase),
         }));
         return Response.json({
             success: true, messages, hasMore,
@@ -127,10 +130,10 @@ export async function handleUserCheckUnread(request, env) {
         ]);
         const vis = adminVisibility(settings);
         // ההודעה האחרונה שלא נקראה - להתראת דפדפן אצל הלקוח
-        const last = countRes.unread ? await env.DB.prepare("SELECT id, message_text FROM chat_messages WHERE user_phone = ? AND sender = 'admin' AND is_read = 0 AND is_deleted = 0 ORDER BY id DESC LIMIT 1").bind(user.phone).first() : null;
+        const last = countRes.unread ? await env.DB.prepare("SELECT id, message_text, file_key, file_name, file_type FROM chat_messages WHERE user_phone = ? AND sender = 'admin' AND is_read = 0 AND is_deleted = 0 ORDER BY id DESC LIMIT 1").bind(user.phone).first() : null;
         return Response.json({
             success: true, unreadCount: countRes.unread || 0, adminTyping: vis.showTyping && isFresh(thread && thread.admin_typing_at, TYPING_SECONDS),
-            lastUnread: last ? { id: last.id, text: String(last.message_text || '').slice(0, 160) } : null,
+            lastUnread: last ? { id: last.id, text: messagePreview(last).slice(0, 160) } : null,
         });
     } catch (e) { return Response.json({ error: "שגיאה בבדיקת הודעות" }, { status: 500 }); }
 }
@@ -165,6 +168,39 @@ export async function handleUserSendMessage(request, env, ctx) {
 
         return Response.json({ success: true, message: "ההודעה נשלחה בהצלחה", id: res.meta && res.meta.last_row_id, createdAt: now });
     } catch (e) { return Response.json({ error: "שגיאה בשליחת ההודעה" }, { status: 500 }); }
+}
+
+// שליחת קובץ מהלקוח למנהל (multipart: userToken, file, text, replyTo)
+export async function handleUserSendFile(request, env, ctx) {
+    const { form, file, error: bad } = await readUpload(request, env);
+    if (bad) return bad;
+    const { user, error } = await requireUser(env, { userToken: form.get('userToken') });
+    if (error) return error;
+
+    const text = cleanText(form.get('text'));
+    if (text.length > MAX_TEXT) return Response.json({ error: `ההודעה ארוכה מדי (עד ${MAX_TEXT} תווים)` }, { status: 400 });
+
+    try {
+        if (await userFileQuotaExceeded(env, user.phone)) return Response.json({ error: "שלחת הרבה קבצים בשעה האחרונה. נסה שוב מאוחר יותר." }, { status: 429 });
+        const replyTo = await validReply(env, form.get('replyTo'), user.phone);
+        const f = await storeFile(env, user.phone, file);
+        const now = getIsraelTimeForDB();
+        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_token)
+            VALUES (?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(user.phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, f.file_token).run();
+        await upsertThread(env, user.phone, { user_typing_at: null, archived: 0 });
+
+        const notify = maybeNotifyAdmin(env, user.phone).catch(e => console.error('admin notify failed', e));
+        if (ctx && ctx.waitUntil) ctx.waitUntil(notify); else await notify;
+
+        return Response.json({ success: true, message: "הקובץ נשלח", id: res.meta && res.meta.last_row_id, createdAt: now });
+    } catch (e) { console.error('chat file', e); return Response.json({ error: "שגיאה בשליחת הקובץ" }, { status: 500 }); }
+}
+
+async function validReply(env, id, phone) {
+    if (!id) return null;
+    const target = await env.DB.prepare("SELECT id FROM chat_messages WHERE id = ? AND user_phone = ?").bind(Number(id), phone).first();
+    return target ? target.id : null;
 }
 
 export async function handleUserMarkRead(request, env) {
@@ -279,7 +315,7 @@ export async function handleAdminGetConversations(request, env) {
         // שליפה במקבצים כדי לא לחרוג ממגבלת הפרמטרים של D1
         for (let i = 0; i < lastIds.length; i += 90) {
             const chunk = lastIds.slice(i, i + 90);
-            const { results: last } = await env.DB.prepare(`SELECT id, sender, message_text, is_deleted FROM chat_messages WHERE id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+            const { results: last } = await env.DB.prepare(`SELECT id, sender, message_text, is_deleted, file_key, file_name, file_type FROM chat_messages WHERE id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
             for (const m of last || []) lastMap[m.id] = m;
         }
         const threads = {};
@@ -298,7 +334,7 @@ export async function handleAdminGetConversations(request, env) {
                 last_message_time: r.last_message_time,
                 unread_count: r.unread_count || 0,
                 total: r.total,
-                last_message: { sender: last.sender, text: last.is_deleted === 1 ? DELETED_TEXT : String(last.message_text || '').slice(0, 140) },
+                last_message: { sender: last.sender, text: last.is_deleted === 1 ? DELETED_TEXT : messagePreview(last).slice(0, 140) },
                 online: !!p.online, presence: p.status || 'offline', last_seen_at: p.lastSeenAt || null,
                 typing: isFresh(t.user_typing_at, TYPING_SECONDS),
                 pinned: t.pinned === 1, archived: t.archived === 1, note: t.note || '',
@@ -345,7 +381,11 @@ export async function handleAdminGetChat(request, env) {
         const { results: links } = await env.DB.prepare("SELECT message_id, created_at, sent_ok, used_at, used_ip FROM chat_email_links WHERE phone = ? ORDER BY created_at").bind(phone).all();
         const emailByMsg = {};
         for (const l of links || []) emailByMsg[l.message_id] = { sentAt: l.created_at, ok: l.sent_ok === 1, openedAt: l.used_at, openedIp: l.used_ip };
-        const messages = rows.map(m => ({ ...m, edited: isEdited(m), reply: m.reply_to ? (replies[m.reply_to] || null) : null, email: emailByMsg[m.id] || null }));
+        const apiBase = apiBaseOf(request);
+        const messages = rows.map(({ file_key, file_token, ...m }) => ({
+            ...m, edited: isEdited(m), reply: m.reply_to ? (replies[m.reply_to] || null) : null, email: emailByMsg[m.id] || null,
+            file: fileInfo({ ...m, file_key, file_token }, apiBase),
+        }));
         const t = thread || {};
         const p = presence[phone] || {};
         return Response.json({
@@ -380,19 +420,45 @@ export async function handleAdminSendMessage(request, env, ctx) {
         await upsertThread(env, phone, { admin_typing_at: null, archived: 0 });
 
         const messageId = res.meta && res.meta.last_row_id;
-
-        // מייל ללקוח נשלח רק כשהמנהל סימן זאת במפורש על ההודעה
-        let email = 'none';
-        if (body.sendEmail === true || body.emailMode === 'always') {
-            const can = await canEmailCustomer(env, phone);
-            email = can.ok ? 'queued' : can.reason;
-            if (can.ok) {
-                const job = sendCustomerMessageEmail(env, phone, messageId, can.email).catch(e => console.error('customer email failed', e));
-                if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
-            }
-        }
+        const email = await emailIfAsked(env, ctx, phone, messageId, body.sendEmail === true || body.emailMode === 'always');
         return Response.json({ success: true, message: "ההודעה נשלחה", id: messageId, email });
     } catch (e) { return Response.json({ error: "שגיאה בשליחת הודעה" }, { status: 500 }); }
+}
+
+// מייל ללקוח נשלח רק כשהמנהל סימן זאת במפורש על ההודעה
+async function emailIfAsked(env, ctx, phone, messageId, asked) {
+    if (!asked) return 'none';
+    const can = await canEmailCustomer(env, phone);
+    if (!can.ok) return can.reason;
+    const job = sendCustomerMessageEmail(env, phone, messageId, can.email).catch(e => console.error('customer email failed', e));
+    if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
+    return 'queued';
+}
+
+// שליחת קובץ מהמנהל ללקוח (multipart: adminToken, targetPhone, file, text, replyTo, sendEmail)
+export async function handleAdminSendFile(request, env, ctx) {
+    const { form, file, error: bad } = await readUpload(request, env);
+    if (bad) return bad;
+    const denied = await requireAdmin(env, { adminToken: form.get('adminToken'), active: true });
+    if (denied) return denied;
+
+    const phone = form.get('targetPhone') ? String(form.get('targetPhone')) : '';
+    const text = cleanText(form.get('text'));
+    if (!phone) return Response.json({ error: "חסר טלפון יעד" }, { status: 400 });
+    if (text.length > MAX_TEXT) return Response.json({ error: `ההודעה ארוכה מדי (עד ${MAX_TEXT} תווים)` }, { status: 400 });
+
+    try {
+        const replyTo = await validReply(env, form.get('replyTo'), phone);
+        const f = await storeFile(env, phone, file);
+        const now = getIsraelTimeForDB();
+        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_token)
+            VALUES (?, 'admin', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, f.file_token).run();
+        await upsertThread(env, phone, { admin_typing_at: null, archived: 0 });
+        const messageId = res.meta && res.meta.last_row_id;
+        const email = await emailIfAsked(env, ctx, phone, messageId, form.get('sendEmail') === '1' || form.get('sendEmail') === 'true');
+        return Response.json({ success: true, message: "הקובץ נשלח", id: messageId, email });
+    } catch (e) { console.error('chat file', e); return Response.json({ error: "שגיאה בשליחת הקובץ" }, { status: 500 }); }
 }
 
 export async function handleAdminEditMessage(request, env) {
@@ -453,12 +519,12 @@ export async function handleAdminSearchMessages(request, env) {
 
     const like = `%${q.replace(/[\\%_]/g, c => '\\' + c)}%`;
     const [{ results }, names] = await Promise.all([
-        env.DB.prepare("SELECT id, user_phone, sender, message_text, created_at FROM chat_messages WHERE is_deleted = 0 AND message_text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 50").bind(like).all(),
+        env.DB.prepare("SELECT id, user_phone, sender, message_text, file_key, file_name, file_type, created_at FROM chat_messages WHERE is_deleted = 0 AND (message_text LIKE ? ESCAPE '\\' OR file_name LIKE ? ESCAPE '\\') ORDER BY id DESC LIMIT 50").bind(like, like).all(),
         getAllNamesFromIni(env.YEMOT_TOKEN),
     ]);
     return Response.json({
         success: true,
-        results: (results || []).map(r => ({ id: r.id, phone: r.user_phone, name: names[r.user_phone] || '', sender: r.sender, text: r.message_text, createdAt: r.created_at })),
+        results: (results || []).map(r => ({ id: r.id, phone: r.user_phone, name: names[r.user_phone] || '', sender: r.sender, text: messagePreview(r), createdAt: r.created_at })),
     });
 }
 
@@ -541,6 +607,7 @@ export async function handleAdminDeleteMessage(request, env) {
     try {
         const marks = ids.map(() => '?').join(',');
         const now = getIsraelTimeForDB();
+        const files = body.hardDelete ? await env.DB.prepare(`SELECT file_key FROM chat_messages WHERE id IN (${marks}) AND file_key IS NOT NULL`).bind(...ids).all() : null;
         // מחיקה רכה שומרת עותק של הטקסט שרק המנהל רואה, כדי שאפשר יהיה לשחזר או למחוק לצמיתות מאוחר יותר.
         // הודעה שכבר נמחקה רכה נמחקת עכשיו לצמיתות.
         const stmts = body.hardDelete
@@ -548,6 +615,7 @@ export async function handleAdminDeleteMessage(request, env) {
                env.DB.prepare(`DELETE FROM chat_email_links WHERE message_id IN (${marks})`).bind(...ids)]
             : [env.DB.prepare(`UPDATE chat_messages SET deleted_text = message_text, deleted_at = ?, is_deleted = 1, message_text = '', updated_at = ? WHERE id IN (${marks}) AND is_deleted = 0`).bind(now, now, ...ids)];
         await env.DB.batch(stmts);
+        if (files) await removeFiles(env, (files.results || []).map(r => r.file_key));
         return Response.json({ success: true, deleted: ids.length, message: ids.length > 1 ? `${ids.length} הודעות נמחקו` : "ההודעה נמחקה בהצלחה" });
     } catch (e) { return Response.json({ error: "שגיאה במחיקת ההודעה" }, { status: 500 }); }
 }
@@ -559,7 +627,7 @@ export async function handleAdminRestoreMessage(request, env) {
     if (denied) return denied;
     const id = Number(body.messageId);
     if (!id) return Response.json({ error: "חסר מזהה הודעה" }, { status: 400 });
-    const res = await env.DB.prepare("UPDATE chat_messages SET message_text = deleted_text, deleted_text = NULL, deleted_at = NULL, is_deleted = 0, updated_at = ? WHERE id = ? AND is_deleted = 1 AND deleted_text IS NOT NULL AND deleted_text != ''")
+    const res = await env.DB.prepare("UPDATE chat_messages SET message_text = COALESCE(deleted_text, ''), deleted_text = NULL, deleted_at = NULL, is_deleted = 0, updated_at = ? WHERE id = ? AND is_deleted = 1 AND ((deleted_text IS NOT NULL AND deleted_text != '') OR file_key IS NOT NULL)")
         .bind(getIsraelTimeForDB(), id).run();
     if (!res.meta || !res.meta.changes) return Response.json({ error: "אי אפשר לשחזר את ההודעה הזו (נמחקה לפני שנשמר עותק)" }, { status: 400 });
     return Response.json({ success: true });
@@ -574,7 +642,7 @@ export async function handleAdminPurgeChat(request, env) {
     if (!phone || !['deleted', 'all'].includes(body.scope)) return Response.json({ error: "נתונים חסרים" }, { status: 400 });
 
     const where = body.scope === 'all' ? "user_phone = ?" : "user_phone = ? AND is_deleted = 1";
-    const { results } = await env.DB.prepare(`SELECT id FROM chat_messages WHERE ${where}`).bind(phone).all();
+    const { results } = await env.DB.prepare(`SELECT id, file_key FROM chat_messages WHERE ${where}`).bind(phone).all();
     const ids = (results || []).map(r => r.id);
     const stmts = [env.DB.prepare(`DELETE FROM chat_messages WHERE ${where}`).bind(phone)];
     if (body.scope === 'all') {
@@ -587,5 +655,6 @@ export async function handleAdminPurgeChat(request, env) {
         }
     }
     await env.DB.batch(stmts);
+    await removeFiles(env, (results || []).map(r => r.file_key));
     return Response.json({ success: true, deleted: ids.length });
 }

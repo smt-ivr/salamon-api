@@ -189,6 +189,12 @@ const COLUMNS = [
     // מחיקה רכה בצ'אט: עותק שרק המנהל רואה, לשחזור
     ['chat_messages', 'deleted_text', 'TEXT'],
     ['chat_messages', 'deleted_at', 'TEXT'],
+    // קבצים מצורפים בצ'אט (נשמרים ב-R2, הטוקן משמש לקישור ההורדה)
+    ['chat_messages', 'file_key', 'TEXT'],
+    ['chat_messages', 'file_name', 'TEXT'],
+    ['chat_messages', 'file_type', 'TEXT'],
+    ['chat_messages', 'file_size', 'INTEGER'],
+    ['chat_messages', 'file_token', 'TEXT'],
     // האזנות באתר: כמה פעמים ומתי לאחרונה (השורה נוצרת בהאזנה הראשונה)
     ['message_listens', 'listen_count', 'INTEGER DEFAULT 1'],
     ['message_listens', 'last_listened_at', 'TEXT'],
