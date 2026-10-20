@@ -11,7 +11,7 @@ import { getSettings, setSettings, EDITABLE_SETTINGS } from './schema.js';
 import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
 import { logActivity } from './activity.js';
-import { readUpload, storeFile, removeFiles, fileInfo, apiBaseOf, messagePreview, userFileQuotaExceeded } from './chatFiles.js';
+import { readUpload, storeFile, removeFiles, fileInfo, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -100,14 +100,13 @@ export async function handleUserGetChat(request, env) {
         ]);
         const replies = await attachReplies(env, rows);
         const vis = adminVisibility(settings);
-        const apiBase = apiBaseOf(request);
         const messages = rows.map(msg => ({
             id: msg.id, sender: msg.sender, text: msg.is_deleted === 1 ? DELETED_TEXT : msg.message_text,
             // כשאישורי הקריאה מוסתרים, הלקוח רואה רק "נשלח" על ההודעות שלו
             isRead: msg.sender === 'user' && !vis.showReadReceipts ? false : msg.is_read === 1,
             isDeleted: msg.is_deleted === 1, createdAt: msg.created_at,
             edited: isEdited(msg), replyTo: msg.reply_to ? (replies[msg.reply_to] || null) : null,
-            file: fileInfo(msg, apiBase),
+            file: fileInfo(msg, 'user'),
         }));
         return Response.json({
             success: true, messages, hasMore,
@@ -185,9 +184,9 @@ export async function handleUserSendFile(request, env, ctx) {
         const replyTo = await validReply(env, form.get('replyTo'), user.phone);
         const f = await storeFile(env, user.phone, file);
         const now = getIsraelTimeForDB();
-        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_token)
-            VALUES (?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .bind(user.phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, f.file_token).run();
+        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size)
+            VALUES (?, 'user', ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(user.phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size).run();
         await upsertThread(env, user.phone, { user_typing_at: null, archived: 0 });
 
         const notify = maybeNotifyAdmin(env, user.phone).catch(e => console.error('admin notify failed', e));
@@ -381,10 +380,9 @@ export async function handleAdminGetChat(request, env) {
         const { results: links } = await env.DB.prepare("SELECT message_id, created_at, sent_ok, used_at, used_ip FROM chat_email_links WHERE phone = ? ORDER BY created_at").bind(phone).all();
         const emailByMsg = {};
         for (const l of links || []) emailByMsg[l.message_id] = { sentAt: l.created_at, ok: l.sent_ok === 1, openedAt: l.used_at, openedIp: l.used_ip };
-        const apiBase = apiBaseOf(request);
         const messages = rows.map(({ file_key, file_token, ...m }) => ({
             ...m, edited: isEdited(m), reply: m.reply_to ? (replies[m.reply_to] || null) : null, email: emailByMsg[m.id] || null,
-            file: fileInfo({ ...m, file_key, file_token }, apiBase),
+            file: fileInfo({ ...m, file_key }, 'admin'),
         }));
         const t = thread || {};
         const p = presence[phone] || {};
@@ -426,11 +424,12 @@ export async function handleAdminSendMessage(request, env, ctx) {
 }
 
 // מייל ללקוח נשלח רק כשהמנהל סימן זאת במפורש על ההודעה
-async function emailIfAsked(env, ctx, phone, messageId, asked) {
+// fileMode: 'link' - במייל רק קישור לצ'אט (הקובץ נפתח אחרי התחברות), 'attach' - הקובץ מצורף למייל
+async function emailIfAsked(env, ctx, phone, messageId, asked, fileMode = 'link') {
     if (!asked) return 'none';
     const can = await canEmailCustomer(env, phone);
     if (!can.ok) return can.reason;
-    const job = sendCustomerMessageEmail(env, phone, messageId, can.email).catch(e => console.error('customer email failed', e));
+    const job = sendCustomerMessageEmail(env, phone, messageId, can.email, { attach: fileMode === 'attach' }).catch(e => console.error('customer email failed', e));
     if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
     return 'queued';
 }
@@ -446,17 +445,23 @@ export async function handleAdminSendFile(request, env, ctx) {
     const text = cleanText(form.get('text'));
     if (!phone) return Response.json({ error: "חסר טלפון יעד" }, { status: 400 });
     if (text.length > MAX_TEXT) return Response.json({ error: `ההודעה ארוכה מדי (עד ${MAX_TEXT} תווים)` }, { status: 400 });
+    const limits = parseLimits(form.get('maxViews'), form.get('expiresMinutes'));
+    const wantEmail = form.get('sendEmail') === '1' || form.get('sendEmail') === 'true';
+    const fileMode = form.get('emailFile') === 'attach' ? 'attach' : 'link';
+    // צירוף הקובץ למייל היה עוקף את מגבלות הצפייה
+    if (wantEmail && fileMode === 'attach' && isLimited(limits)) return Response.json({ error: "אי אפשר לצרף למייל קובץ עם הגבלת צפייה או תוקף. שלח קישור בלבד." }, { status: 400 });
+    if (wantEmail && fileMode === 'attach' && file.size > MAX_EMAIL_ATTACHMENT) return Response.json({ error: `קובץ מעל ${MAX_EMAIL_ATTACHMENT / 1024 / 1024}MB אי אפשר לצרף למייל. שלח קישור בלבד.` }, { status: 400 });
 
     try {
         const replyTo = await validReply(env, form.get('replyTo'), phone);
         const f = await storeFile(env, phone, file);
         const now = getIsraelTimeForDB();
-        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_token)
-            VALUES (?, 'admin', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .bind(phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, f.file_token).run();
+        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_max_views, file_views, file_expires_at)
+            VALUES (?, 'admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+            .bind(phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, limits.file_max_views, limits.file_expires_at).run();
         await upsertThread(env, phone, { admin_typing_at: null, archived: 0 });
         const messageId = res.meta && res.meta.last_row_id;
-        const email = await emailIfAsked(env, ctx, phone, messageId, form.get('sendEmail') === '1' || form.get('sendEmail') === 'true');
+        const email = await emailIfAsked(env, ctx, phone, messageId, wantEmail, fileMode);
         return Response.json({ success: true, message: "הקובץ נשלח", id: messageId, email });
     } catch (e) { console.error('chat file', e); return Response.json({ error: "שגיאה בשליחת הקובץ" }, { status: 500 }); }
 }
@@ -508,6 +513,29 @@ export async function handleAdminMarkUnread(request, env) {
     if (!last) return Response.json({ error: "אין הודעות מהלקוח בשיחה זו" }, { status: 404 });
     await env.DB.prepare("UPDATE chat_messages SET is_read = 0 WHERE id = ?").bind(last.id).run();
     return Response.json({ success: true });
+}
+
+// שינוי המגבלות של קובץ שהמנהל שלח: מספר צפיות, תוקף, איפוס הספירה או חסימה מיידית
+export async function handleAdminFileLimits(request, env) {
+    const body = await readBody(request);
+    const denied = await requireAdmin(env, { ...body, active: true });
+    if (denied) return denied;
+    const id = Number(body.messageId);
+    const row = id ? await env.DB.prepare("SELECT id, file_key, file_views FROM chat_messages WHERE id = ? AND sender = 'admin'").bind(id).first() : null;
+    if (!row || !row.file_key) return Response.json({ error: "הקובץ לא נמצא" }, { status: 404 });
+
+    const views = body.resetViews ? 0 : (row.file_views || 0);
+    let fields;
+    if (body.revoke) fields = { file_max_views: 0 };
+    else {
+        const l = parseLimits(body.maxViews, body.expiresMinutes);
+        fields = { file_max_views: l.file_max_views, file_expires_at: body.keepExpiry ? undefined : l.file_expires_at };
+    }
+    const sets = ['file_views = ?'], vals = [views];
+    for (const [k, v] of Object.entries(fields)) if (v !== undefined) { sets.push(`${k} = ?`); vals.push(v); }
+    await env.DB.prepare(`UPDATE chat_messages SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).bind(...vals, getIsraelTimeForDB(), id).run();
+    const updated = await env.DB.prepare("SELECT * FROM chat_messages WHERE id = ?").bind(id).first();
+    return Response.json({ success: true, file: fileInfo(updated, 'admin') });
 }
 
 export async function handleAdminSearchMessages(request, env) {

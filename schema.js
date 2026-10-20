@@ -195,6 +195,11 @@ const COLUMNS = [
     ['chat_messages', 'file_type', 'TEXT'],
     ['chat_messages', 'file_size', 'INTEGER'],
     ['chat_messages', 'file_token', 'TEXT'],
+    // מגבלות שהמנהל קבע לקובץ ששלח: מספר צפיות, תוקף, ומעקב צפיות
+    ['chat_messages', 'file_max_views', 'INTEGER'],
+    ['chat_messages', 'file_views', 'INTEGER DEFAULT 0'],
+    ['chat_messages', 'file_expires_at', 'TEXT'],
+    ['chat_messages', 'file_last_viewed_at', 'TEXT'],
     // האזנות באתר: כמה פעמים ומתי לאחרונה (השורה נוצרת בהאזנה הראשונה)
     ['message_listens', 'listen_count', 'INTEGER DEFAULT 1'],
     ['message_listens', 'last_listened_at', 'TEXT'],
