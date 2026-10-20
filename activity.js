@@ -5,6 +5,7 @@
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, getMinutesSinceIsraelDbTime } from './timeUtils.js';
 import { getAllNamesFromIni } from './yemot.js';
 import { isMainAdmin, forbidden, sessionExpired } from './adminAuth.js';
+import { logMaster } from './master.js';
 
 export const ONLINE_MINUTES = 2;
 
@@ -72,8 +73,11 @@ export async function beginTracking(request, env, pathname, ip) {
 // שלב ב': אחרי שהתקבלה תשובה
 export async function finishTracking(env, t, response) {
     if (!t) return;
-    // כניסת מאסטר (המנהל בחשבון של לקוח) לא נרשמת בשום מקום: לא נוכחות ולא יומן פעולות
-    if (t.session && t.session.token_type === 'master') return;
+    // כניסת מאסטר (המנהל בחשבון של לקוח) לא נרשמת אצל הלקוח - לא נוכחות ולא יומן פעולות - אלא רק ביומן המאסטר
+    if (t.session && t.session.token_type === 'master') {
+        if (t.action && response.status < 400) await logMaster(env, { phone: t.session.phone, action: t.action, details: masterDetails(t), ip: t.ip, userAgent: t.userAgent, tokenId: t.userToken });
+        return;
+    }
     const ok = response.status < 400;
     const now = getIsraelTimeForDB();
 
@@ -90,7 +94,8 @@ export async function finishTracking(env, t, response) {
         try { data = await response.clone().json(); } catch (e) {}
         if (ok && data.token) {
             const s = await env.DB.prepare("SELECT phone, token_type FROM user_tokens WHERE id = ?").bind(data.token).first();
-            if (!s || s.token_type === 'master') return;
+            if (!s) return;
+            if (s.token_type === 'master') { await logMaster(env, { phone: s.phone, action: 'LOGIN', ip: t.ip, userAgent: t.userAgent, tokenId: data.token }); return; }
             phone = s.phone;
             const method = s.token_type === 'master' ? 'master' : isGoogle ? 'google' : 'password';
             action = method === 'master' ? 'LOGIN_MASTER' : 'LOGIN';
@@ -130,6 +135,14 @@ export async function finishTracking(env, t, response) {
     }
     if (!phone) return;
     await logActivity(env, phone, action, details, t.ip, t.userAgent, now);
+}
+
+function masterDetails(t) {
+    if (t.action === 'CHAT_SEND') return String((t.body && t.body.text) || '').slice(0, 120);
+    if (t.action === 'DELETE_MESSAGE') return String((t.body && t.body.fileName) || '');
+    if (t.action === 'LISTEN') return t.fileId ? `קובץ #${t.fileId}` : '';
+    if (t.action === 'PROFILE_UPDATE') return Object.keys(t.body || {}).filter(k => !['userToken', 'password'].includes(k)).join(', ');
+    return '';
 }
 
 export async function logActivity(env, phone, action, details, ip, userAgent, now = getIsraelTimeForDB()) {

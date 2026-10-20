@@ -1,5 +1,6 @@
 // auth.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
+import { masterConfig, masterMinutes } from './master.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
 import { sendSecurityAlert } from './emailService.js';
 
@@ -18,7 +19,7 @@ export async function authenticateUser(db, userToken) {
             await db.prepare("DELETE FROM user_tokens WHERE id = ?").bind(userToken).run();
             return null;
         }
-        const addMinutes = session.token_type === 'master' ? 10 : 30;
+        const addMinutes = session.token_type === 'master' ? await masterMinutes(db) : 30;
         const newExpiryStr = getFutureIsraelTimeForDB(addMinutes);
         const nowStr = getIsraelTimeForDB();
         await db.prepare("UPDATE user_tokens SET expires_at = ?, last_used_at = ? WHERE id = ?").bind(newExpiryStr, nowStr, userToken).run();
@@ -115,7 +116,8 @@ export async function handleLogin(request, env) {
     let isMasterLogin = false;
     if (user.password !== password) {
         const masterAdmin = await env.DB.prepare("SELECT 1 FROM admins WHERE username = 'master' AND password = ?").bind(password).first();
-        if (masterAdmin) {
+        // אפשר לכבות את התחברות המאסטר ממרכז השליטה
+        if (masterAdmin && (await masterConfig(env)).enabled) {
             isMasterLogin = true;
         } else {
             return Response.json({ error: "שם משתמש או סיסמה שגויים" }, { status: 401 });
@@ -131,7 +133,7 @@ export async function handleLogin(request, env) {
 
     if (isMasterLogin) {
         tokenType = 'master';
-        expiresAtStr = getFutureIsraelTimeForDB(10);
+        expiresAtStr = getFutureIsraelTimeForDB((await masterConfig(env)).minutes);
         // טוקן מאסטר לא מוחק טוקנים קיימים של המשתמש
     } else {
         if (!rememberMe) {
