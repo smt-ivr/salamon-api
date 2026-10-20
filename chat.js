@@ -11,7 +11,7 @@ import { getSettings, setSettings, EDITABLE_SETTINGS } from './schema.js';
 import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
 import { logActivity } from './activity.js';
-import { readUpload, storeFile, removeFiles, fileInfo, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
+import { readUpload, storeFile, storeThumb, removeFiles, fileInfo, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -183,10 +183,11 @@ export async function handleUserSendFile(request, env, ctx) {
         if (await userFileQuotaExceeded(env, user.phone)) return Response.json({ error: "שלחת הרבה קבצים בשעה האחרונה. נסה שוב מאוחר יותר." }, { status: 429 });
         const replyTo = await validReply(env, form.get('replyTo'), user.phone);
         const f = await storeFile(env, user.phone, file);
+        const th = await storeThumb(env, f.file_key, form).catch(() => ({ file_thumb_key: null, file_meta: null }));
         const now = getIsraelTimeForDB();
-        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size)
-            VALUES (?, 'user', ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .bind(user.phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size).run();
+        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_thumb_key, file_meta)
+            VALUES (?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(user.phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, th.file_thumb_key, th.file_meta).run();
         await upsertThread(env, user.phone, { user_typing_at: null, archived: 0 });
 
         const notify = maybeNotifyAdmin(env, user.phone).catch(e => console.error('admin notify failed', e));
@@ -459,10 +460,11 @@ export async function handleAdminSendFile(request, env, ctx) {
     try {
         const replyTo = await validReply(env, form.get('replyTo'), phone);
         const f = await storeFile(env, phone, file);
+        const th = await storeThumb(env, f.file_key, form).catch(() => ({ file_thumb_key: null, file_meta: null }));
         const now = getIsraelTimeForDB();
-        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_max_views, file_views, file_expires_at)
-            VALUES (?, 'admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`)
-            .bind(phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, limits.file_max_views, limits.file_expires_at).run();
+        const res = await env.DB.prepare(`INSERT INTO chat_messages (user_phone, sender, message_text, created_at, updated_at, reply_to, file_key, file_name, file_type, file_size, file_max_views, file_views, file_expires_at, file_thumb_key, file_meta)
+            VALUES (?, 'admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`)
+            .bind(phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, limits.file_max_views, limits.file_expires_at, th.file_thumb_key, th.file_meta).run();
         await upsertThread(env, phone, { admin_typing_at: null, archived: 0 });
         const messageId = res.meta && res.meta.last_row_id;
         const email = await emailIfAsked(env, ctx, phone, messageId, wantEmail, fileMode);

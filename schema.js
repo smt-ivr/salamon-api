@@ -70,6 +70,19 @@ const STATEMENTS = [
         user_agent TEXT
     )`,
 
+    // יומן התחברויות ופעולות מאסטר (נפרד מהיומן של הלקוח, ורק המנהל הראשי רואה אותו)
+    `CREATE TABLE IF NOT EXISTS master_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        phone TEXT,
+        action TEXT NOT NULL,
+        details TEXT,
+        ip TEXT,
+        user_agent TEXT,
+        session TEXT,
+        created_at TEXT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_master_log_phone ON master_log (phone, id)`,
+
     `CREATE TABLE IF NOT EXISTS admin_login_attempts (
         ip TEXT,
         created_at TEXT
@@ -200,6 +213,9 @@ const COLUMNS = [
     ['chat_messages', 'file_views', 'INTEGER DEFAULT 0'],
     ['chat_messages', 'file_expires_at', 'TEXT'],
     ['chat_messages', 'file_last_viewed_at', 'TEXT'],
+    // תמונה מקדימה לקובץ (פריים מסרטון, עמוד ראשון של PDF) ופרטים: מידות, אורך, מספר עמודים
+    ['chat_messages', 'file_thumb_key', 'TEXT'],
+    ['chat_messages', 'file_meta', 'TEXT'],
     // האזנות באתר: כמה פעמים ומתי לאחרונה (השורה נוצרת בהאזנה הראשונה)
     ['message_listens', 'listen_count', 'INTEGER DEFAULT 1'],
     ['message_listens', 'last_listened_at', 'TEXT'],
