@@ -9,7 +9,7 @@ import { sendEmail, escapeHtml } from './emailService.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, getMinutesSinceIsraelDbTime, isPastIsraelTime } from './timeUtils.js';
 import { getSettings, setSettings } from './schema.js';
 import { getNameFromIni } from './yemot.js';
-import { messagePreview } from './chatFiles.js';
+import { messagePreview, emailAttachment, isLimited } from './chatFiles.js';
 
 const ADMIN_CHAT_URL = 'https://smti.uk/salamon/admin#chat/';
 const SITE_URL = 'https://smti.uk/salamon';
@@ -190,10 +190,23 @@ export async function canEmailCustomer(env, phone) {
     return { ok: true, email: user.email };
 }
 
-export async function sendCustomerMessageEmail(env, phone, messageId, email) {
-    const msg = await env.DB.prepare("SELECT id, message_text, file_key, file_name, file_type, created_at FROM chat_messages WHERE id = ? AND user_phone = ? AND sender = 'admin'").bind(messageId, phone).first();
+function fileLimitNote(row) {
+    if (!isLimited(row)) return '';
+    const parts = [];
+    if (row.file_max_views === 1) parts.push('לצפייה חד-פעמית');
+    else if (row.file_max_views !== null && row.file_max_views !== undefined) parts.push(`עד ${row.file_max_views} צפיות`);
+    if (row.file_expires_at) parts.push(`זמין עד ${formatTime(row.file_expires_at)}`);
+    return parts.length ? ` (${parts.join(', ')})` : '';
+}
+
+export async function sendCustomerMessageEmail(env, phone, messageId, email, { attach = false } = {}) {
+    const msg = await env.DB.prepare("SELECT id, message_text, file_key, file_name, file_type, file_size, file_max_views, file_expires_at, created_at FROM chat_messages WHERE id = ? AND user_phone = ? AND sender = 'admin'").bind(messageId, phone).first();
     if (!msg) return false;
     msg.message_text = messagePreview(msg);
+    // קובץ: מצורף למייל, או רק הודעה שהוא מחכה בצ'אט (שם הוא נפתח אחרי התחברות)
+    const attachment = msg.file_key && attach ? await emailAttachment(env, msg) : null;
+    const fileNote = !msg.file_key ? '' : attachment ? '📎 הקובץ מצורף למייל זה.'
+        : `🔒 הקובץ זמין בצ'אט באתר, אחרי התחברות${fileLimitNote(msg)}.`;
     const [lastUser, name] = await Promise.all([
         env.DB.prepare("SELECT message_text, file_key, file_name, file_type FROM chat_messages WHERE user_phone = ? AND sender = 'user' AND is_deleted = 0 AND id < ? ORDER BY id DESC LIMIT 1").bind(phone, messageId).first(),
         getNameFromIni(phone, env.YEMOT_TOKEN).catch(() => null),
@@ -209,7 +222,8 @@ export async function sendCustomerMessageEmail(env, phone, messageId, email) {
     const greeting = name ? `שלום ${escapeHtml(name)},` : 'שלום,';
     const body = `
         <p style="margin:0;">${greeting}<br>צוות עכשיו סלומון השיב לך בצ'אט:</p>
-        ${messageCard({ from: 'צוות עכשיו סלומון', time: formatTime(msg.created_at), text: msg.message_text, quote: lastUser ? { label: 'ההודעה שלך', text: messagePreview(lastUser) } : null })}`;
+        ${messageCard({ from: 'צוות עכשיו סלומון', time: formatTime(msg.created_at), text: msg.message_text, quote: lastUser ? { label: 'ההודעה שלך', text: messagePreview(lastUser) } : null })}
+        ${fileNote ? `<p style="margin:14px 0 0; font-size:14px; color:#475569;">${escapeHtml(fileNote)}</p>` : ''}`;
     const html = layout({
         preheader: String(msg.message_text).slice(0, 110),
         eyebrow: 'הודעה חדשה בצ\'אט', title: 'יש לך תשובה מצוות עכשיו סלומון', body,
@@ -217,9 +231,9 @@ export async function sendCustomerMessageEmail(env, phone, messageId, email) {
         footnote: `הכפתור פותח את הצ'אט ישירות, בלי צורך בסיסמה. הוא חד-פעמי ותקף ל-${LINK_DAYS} ימים.<br>אם לא אתה ביקשת, אפשר להתעלם מהמייל.`,
         unsubscribeUrl: await unsubscribeLink(env, email),
     });
-    const text = `${name ? `שלום ${name},` : 'שלום,'}\n\nצוות עכשיו סלומון השיב לך:\n\n${msg.message_text}\n\nלהמשך השיחה: ${link}`;
+    const text = `${name ? `שלום ${name},` : 'שלום,'}\n\nצוות עכשיו סלומון השיב לך:\n\n${msg.message_text}${fileNote ? `\n\n${fileNote}` : ''}\n\nלהמשך השיחה: ${link}`;
 
-    const ok = await sendEmail(env, email, 'יש לך תשובה חדשה בצ\'אט | עכשיו סלומון', html, text);
+    const ok = await sendEmail(env, email, 'יש לך תשובה חדשה בצ\'אט | עכשיו סלומון', html, text, attachment ? [attachment] : undefined);
     await env.DB.prepare("UPDATE chat_email_links SET sent_ok = ? WHERE id = ?").bind(ok ? 1 : 0, await sha256(token)).run();
     if (ok) await setThreadField(env, phone, 'user_notified_at', now);
     return ok;

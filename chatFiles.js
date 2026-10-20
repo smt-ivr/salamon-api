@@ -1,10 +1,14 @@
 // chatFiles.js
 // קבצים מצורפים בצ'אט: הלקוח שולח למנהל והמנהל ללקוח. הקבצים נשמרים בשרת הקבצים של קלאודפלייר (R2, ה-binding FILES).
-// כל קובץ מקבל טוקן אקראי, והקישור /api/chat/file/<id>/<token> הוא שמאפשר לצפות בו או להוריד אותו.
+// אין קישור ציבורי: הקובץ נמסר רק בבקשה מאומתת של הלקוח (בשיחה שלו) או של המנהל.
+// המנהל יכול להגביל קובץ ששלח: צפייה חד-פעמית, מספר צפיות, או תוקף.
 
-import { getFutureIsraelTimeForDB } from './timeUtils.js';
+import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
+import { authenticateUser } from './auth.js';
+import { isMainAdmin } from './adminAuth.js';
 
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const MAX_EMAIL_ATTACHMENT = 10 * 1024 * 1024;
 const KEY_PREFIX = 'salamon/chat/';
 const MAX_NAME = 120;
 
@@ -52,13 +56,12 @@ function tooBig() {
 export async function storeFile(env, phone, file) {
     const name = cleanName(file.name);
     const type = cleanType(file.type);
-    const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
     const key = `${KEY_PREFIX}${String(phone).replace(/[^\d+]/g, '') || 'unknown'}/${Date.now()}-${crypto.randomUUID()}`;
     await env.FILES.put(key, file.stream ? file.stream() : file, {
         httpMetadata: { contentType: type },
         customMetadata: { phone: String(phone), name: encodeURIComponent(name) },
     });
-    return { file_key: key, file_name: name, file_type: type, file_size: file.size, file_token: token };
+    return { file_key: key, file_name: name, file_type: type, file_size: file.size };
 }
 
 export async function removeFiles(env, keys) {
@@ -67,20 +70,40 @@ export async function removeFiles(env, keys) {
     for (let i = 0; i < list.length; i += 900) await env.FILES.delete(list.slice(i, i + 900)).catch(e => console.error('r2 delete', e));
 }
 
-// פרטי הקובץ כפי שהם נשלחים לדפדפן
-export function fileInfo(row, apiBase) {
-    if (!row || !row.file_key || row.is_deleted === 1) return null;
+// מגבלות שהמנהל קבע לקובץ: מספר צפיות (null = ללא הגבלה) ותוקף בדקות מעכשיו (null = ללא)
+export function parseLimits(maxViews, expiresMinutes) {
+    const views = maxViews === null || maxViews === undefined || maxViews === '' ? NaN : Math.round(Number(maxViews));
+    const mins = expiresMinutes === null || expiresMinutes === undefined || expiresMinutes === '' ? NaN : Math.round(Number(expiresMinutes));
     return {
-        name: row.file_name || 'file', type: row.file_type || 'application/octet-stream', size: row.file_size || 0,
-        url: `${apiBase}/chat/file/${row.id}/${row.file_token}`,
+        file_max_views: Number.isFinite(views) ? Math.min(1000, Math.max(0, views)) : null,
+        file_expires_at: Number.isFinite(mins) && mins > 0 ? getFutureIsraelTimeForDB(Math.min(mins, 366 * 24 * 60)) : null,
     };
 }
 
-// כתובת ה-API כפי שהדפדפן פנה אליה (למשל https://smti.uk/salamon/api)
-export function apiBaseOf(request) {
-    const url = new URL(request.url);
-    const i = url.pathname.indexOf('/api/');
-    return url.origin + (i >= 0 ? url.pathname.slice(0, i) : '') + '/api';
+// האם הלקוח עדיין רשאי לפתוח את הקובץ. קבצים שהלקוח עצמו שלח - תמיד
+function blockReason(row) {
+    if (row.sender !== 'admin') return null;
+    if (row.file_max_views === 0) return 'revoked';
+    if (row.file_expires_at && isPastIsraelTime(row.file_expires_at)) return 'expired';
+    if (row.file_max_views !== null && row.file_max_views !== undefined && (row.file_views || 0) >= row.file_max_views) return 'used';
+    return null;
+}
+
+export function isLimited(row) {
+    return !!row && ((row.file_max_views !== null && row.file_max_views !== undefined) || !!row.file_expires_at);
+}
+
+// פרטי הקובץ כפי שהם נשלחים לדפדפן. אין בהם קישור: הקובץ נפתח רק דרך בקשה מאומתת ל-/api/chat/file
+export function fileInfo(row, viewer = 'user') {
+    if (!row || !row.file_key || row.is_deleted === 1) return null;
+    const reason = blockReason(row);
+    const info = {
+        name: row.file_name || 'file', type: row.file_type || 'application/octet-stream', size: row.file_size || 0,
+        limited: isLimited(row), maxViews: row.file_max_views ?? null, views: row.file_views || 0, expiresAt: row.file_expires_at || null,
+        available: viewer === 'admin' || !reason, blocked: reason,
+    };
+    if (viewer === 'admin') info.lastViewedAt = row.file_last_viewed_at || null;
+    return info;
 }
 
 // תיאור קצר להודעה שיש בה רק קובץ (רשימת השיחות, התראות ומיילים)
@@ -104,40 +127,62 @@ export async function userFileQuotaExceeded(env, phone) {
     return !!r && r.n >= 20;
 }
 
-// GET /api/chat/file/<id>/<token>  (?dl=1 מכריח הורדה)
+const BLOCKED_TEXT = { expired: "תוקף הקובץ פג", used: "הקובץ כבר נצפה במספר הפעמים המותר", revoked: "הגישה לקובץ בוטלה" };
+
+const FILE_COLUMNS = "id, user_phone, sender, is_deleted, file_key, file_name, file_type, file_size, file_max_views, file_views, file_expires_at";
+
+// POST /api/chat/file  { userToken | adminToken, messageId, download }
+// הקובץ נמסר רק למי שמחובר: הלקוח - רק משיחה שלו, המנהל - מכל שיחה.
+// פתיחה של הלקוח לקובץ שהמנהל שלח נספרת, ונחסמת כשנגמרו הצפיות או פג התוקף.
 export async function handleChatFile(request, env) {
-    const url = new URL(request.url);
-    const m = url.pathname.match(/\/api\/chat\/file\/(\d+)\/([a-f0-9]{64})$/);
-    if (!m) return new Response('Not Found', { status: 404 });
-    if (!hasFileStorage(env)) return new Response('File storage unavailable', { status: 503 });
+    if (!hasFileStorage(env)) return Response.json({ error: "שרת הקבצים לא מחובר" }, { status: 503 });
+    const body = await request.json().catch(() => ({}));
+    const id = Number(body.messageId);
+    if (!Number.isInteger(id) || id <= 0) return Response.json({ error: "חסר מזהה קובץ" }, { status: 400 });
 
-    const row = await env.DB.prepare("SELECT id, file_key, file_name, file_type, file_size, file_token, is_deleted FROM chat_messages WHERE id = ?").bind(Number(m[1])).first();
-    if (!row || !row.file_key || row.file_token !== m[2]) return new Response('Not Found', { status: 404 });
-    if (row.is_deleted === 1) return new Response('Gone', { status: 410 });
+    let viewer = null, phone = null;
+    if (body.adminToken && await isMainAdmin(env, body.adminToken)) viewer = 'admin';
+    else if (body.userToken) {
+        const user = await authenticateUser(env.DB, body.userToken);
+        if (user) { viewer = 'user'; phone = user.phone; }
+    }
+    if (!viewer) return Response.json({ error: "יש להתחבר כדי לפתוח את הקובץ" }, { status: 401 });
 
-    const obj = await env.FILES.get(row.file_key, { range: request.headers, onlyIf: request.headers });
-    if (!obj) return new Response('Not Found', { status: 404 });
+    const row = await env.DB.prepare(`SELECT ${FILE_COLUMNS} FROM chat_messages WHERE id = ?`).bind(id).first();
+    if (!row || !row.file_key || (viewer === 'user' && row.user_phone !== phone)) return Response.json({ error: "הקובץ לא נמצא" }, { status: 404 });
+    if (row.is_deleted === 1) return Response.json({ error: "הקובץ נמחק" }, { status: 410 });
+
+    if (viewer === 'user' && row.sender === 'admin') {
+        const reason = blockReason(row);
+        if (reason) return Response.json({ error: BLOCKED_TEXT[reason], code: reason }, { status: 410 });
+        // ספירה אטומית, כדי ששתי פתיחות במקביל לא יעברו את המגבלה
+        const upd = await env.DB.prepare(`UPDATE chat_messages SET file_views = COALESCE(file_views, 0) + 1, file_last_viewed_at = ?
+            WHERE id = ? AND is_deleted = 0 AND (file_max_views IS NULL OR COALESCE(file_views, 0) < file_max_views)`).bind(getIsraelTimeForDB(), id).run();
+        if (!upd.meta || !upd.meta.changes) return Response.json({ error: "הקובץ כבר נצפה במספר הפעמים המותר", code: 'used' }, { status: 410 });
+    }
+
+    const obj = await env.FILES.get(row.file_key);
+    if (!obj) return Response.json({ error: "הקובץ לא נמצא בשרת הקבצים" }, { status: 404 });
 
     const type = row.file_type || 'application/octet-stream';
-    const inline = INLINE_TYPES.test(type) && url.searchParams.get('dl') !== '1';
+    const inline = INLINE_TYPES.test(type) && !body.download;
     const headers = new Headers();
     headers.set('Content-Type', inline ? type : 'application/octet-stream');
     headers.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.file_name || 'file')}`);
-    headers.set('X-Content-Type-Options', 'nosniff');
-    headers.set('Content-Security-Policy', "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox");
-    headers.set('Cache-Control', 'private, max-age=86400');
-    headers.set('Accept-Ranges', 'bytes');
-    if (obj.httpEtag) headers.set('ETag', obj.httpEtag);
-
-    if (!('body' in obj) || !obj.body) return new Response(null, { status: 304, headers });
-    if (obj.range && request.headers.get('range')) {
-        const r = obj.range;
-        const offset = 'suffix' in r ? Math.max(0, obj.size - r.suffix) : (r.offset || 0);
-        const length = 'suffix' in r ? obj.size - offset : (r.length ?? obj.size - offset);
-        headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${obj.size}`);
-        headers.set('Content-Length', String(length));
-        return new Response(obj.body, { status: 206, headers });
-    }
     headers.set('Content-Length', String(obj.size));
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    headers.set('Cache-Control', 'no-store');
     return new Response(obj.body, { headers });
+}
+
+// הקובץ כצרופה למייל (Resend). רק לקובץ בלי מגבלות, ועד 10MB
+export async function emailAttachment(env, row) {
+    if (!row || !row.file_key || !hasFileStorage(env) || isLimited(row) || (row.file_size || 0) > MAX_EMAIL_ATTACHMENT) return null;
+    const obj = await env.FILES.get(row.file_key);
+    if (!obj) return null;
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return { filename: row.file_name || 'file', content: btoa(bin) };
 }

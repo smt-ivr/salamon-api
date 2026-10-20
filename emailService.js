@@ -2,7 +2,8 @@
 import { getIsraelTimeForDB } from './timeUtils.js';
 
 // פונקציית ליבה לשליחת אימייל דרך Resend
-export async function sendEmail(env, to, subject, html, text) {
+// attachments (לא חובה): [{ filename, content (base64) }]
+export async function sendEmail(env, to, subject, html, text, attachments) {
     if (!env.RESEND_API_KEY) {
         console.error("Missing RESEND_API_KEY for email service");
         return false;
@@ -19,7 +20,8 @@ export async function sendEmail(env, to, subject, html, text) {
                 to: [to],
                 subject: subject,
                 html: html,
-                text: text
+                text: text,
+                ...(attachments && attachments.length ? { attachments } : {})
             })
         });
         return res.ok;
