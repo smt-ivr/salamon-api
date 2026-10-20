@@ -13,7 +13,20 @@ const KEY_PREFIX = 'salamon/chat/';
 const MAX_NAME = 120;
 
 // סוגים שמוצגים בדפדפן. כל השאר יורדים כקובץ, כדי שקובץ HTML/SVG לא ירוץ תחת הדומיין של האתר
-const INLINE_TYPES = /^(image\/(png|jpe?g|gif|webp|avif|bmp)|application\/pdf|audio\/[\w.+-]+|video\/(mp4|webm|ogg|quicktime)|text\/plain)$/;
+const INLINE_TYPES = /^(image\/(png|jpe?g|gif|webp|avif|bmp|heic|heif)|application\/pdf|audio\/[\w.+-]+|video\/[\w.+-]+|text\/plain)$/;
+
+// כשהדפדפן לא שלח סוג קובץ (נפוץ בטלפונים), הסוג נקבע לפי הסיומת
+const EXT_TYPES = {
+    pdf: 'application/pdf', txt: 'text/plain', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif',
+    mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', '3gp': 'video/3gpp', mkv: 'video/x-matroska', avi: 'video/x-msvideo',
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', amr: 'audio/amr',
+};
+export function typeOf(type, name) {
+    const t = String(type || '').toLowerCase();
+    if (t && t !== 'application/octet-stream') return t;
+    const ext = String(name || '').toLowerCase().split('.').pop();
+    return EXT_TYPES[ext] || 'application/octet-stream';
+}
 const BLOCKED_EXT = /\.(exe|msi|bat|cmd|com|scr|pif|vbs|vbe|js|jse|wsf|wsh|ps1|psm1|jar|reg|lnk|hta|cpl|dll|apk|app|dmg|sh)$/i;
 
 export function hasFileStorage(env) {
@@ -55,7 +68,7 @@ function tooBig() {
 // שמירת הקובץ ב-R2. מחזיר את השדות לשמירה בשורת ההודעה
 export async function storeFile(env, phone, file) {
     const name = cleanName(file.name);
-    const type = cleanType(file.type);
+    const type = typeOf(cleanType(file.type), name);
     const key = `${KEY_PREFIX}${String(phone).replace(/[^\d+]/g, '') || 'unknown'}/${Date.now()}-${crypto.randomUUID()}`;
     await env.FILES.put(key, file.stream ? file.stream() : file, {
         httpMetadata: { contentType: type },
@@ -98,11 +111,12 @@ export function fileInfo(row, viewer = 'user') {
     if (!row || !row.file_key || row.is_deleted === 1) return null;
     const reason = blockReason(row);
     const info = {
-        name: row.file_name || 'file', type: row.file_type || 'application/octet-stream', size: row.file_size || 0,
+        name: row.file_name || 'file', type: typeOf(row.file_type, row.file_name), size: row.file_size || 0,
         limited: isLimited(row), maxViews: row.file_max_views ?? null, views: row.file_views || 0, expiresAt: row.file_expires_at || null,
         available: viewer === 'admin' || !reason, blocked: reason,
     };
     if (viewer === 'admin') info.lastViewedAt = row.file_last_viewed_at || null;
+    if (viewer === 'master') { info.available = true; info.master = true; }
     return info;
 }
 
@@ -144,12 +158,13 @@ export async function handleChatFile(request, env) {
     if (body.adminToken && await isMainAdmin(env, body.adminToken)) viewer = 'admin';
     else if (body.userToken) {
         const user = await authenticateUser(env.DB, body.userToken);
-        if (user) { viewer = 'user'; phone = user.phone; }
+        // מאסטר רואה את הקבצים של הלקוח בלי הגבלה ובלי שהצפייה תיספר
+        if (user) { viewer = user.is_master ? 'master' : 'user'; phone = user.phone; }
     }
     if (!viewer) return Response.json({ error: "יש להתחבר כדי לפתוח את הקובץ" }, { status: 401 });
 
     const row = await env.DB.prepare(`SELECT ${FILE_COLUMNS} FROM chat_messages WHERE id = ?`).bind(id).first();
-    if (!row || !row.file_key || (viewer === 'user' && row.user_phone !== phone)) return Response.json({ error: "הקובץ לא נמצא" }, { status: 404 });
+    if (!row || !row.file_key || (viewer !== 'admin' && row.user_phone !== phone)) return Response.json({ error: "הקובץ לא נמצא" }, { status: 404 });
     if (row.is_deleted === 1) return Response.json({ error: "הקובץ נמחק" }, { status: 410 });
 
     if (viewer === 'user' && row.sender === 'admin') {
@@ -164,7 +179,7 @@ export async function handleChatFile(request, env) {
     const obj = await env.FILES.get(row.file_key);
     if (!obj) return Response.json({ error: "הקובץ לא נמצא בשרת הקבצים" }, { status: 404 });
 
-    const type = row.file_type || 'application/octet-stream';
+    const type = typeOf(row.file_type, row.file_name);
     const inline = INLINE_TYPES.test(type) && !body.download;
     const headers = new Headers();
     headers.set('Content-Type', inline ? type : 'application/octet-stream');

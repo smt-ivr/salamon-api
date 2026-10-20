@@ -113,7 +113,8 @@ export async function handleV2Prefs(request, env) {
     if (body.prefs && typeof body.prefs === 'object') {
         prefs = { ...prefs, ...sanitizePrefs(body.prefs) };
     }
-    if (body.prefs || body.open) {
+    // במאסטר לא נשמר כלום (גם לא ספירת פתיחות), כדי שהכניסה לא תשאיר עקבות
+    if ((body.prefs || body.open) && !user.is_master) {
         await env.DB.prepare(`INSERT INTO user_prefs (phone, prefs, updated_at, last_v2_at, v2_opens) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(phone) DO UPDATE SET prefs = excluded.prefs, updated_at = CASE WHEN ? THEN excluded.updated_at ELSE user_prefs.updated_at END,
             last_v2_at = CASE WHEN ? THEN excluded.last_v2_at ELSE user_prefs.last_v2_at END, v2_opens = COALESCE(user_prefs.v2_opens, 0) + ?`)
