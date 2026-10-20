@@ -106,7 +106,7 @@ export async function handleUserGetChat(request, env) {
             isRead: msg.sender === 'user' && !vis.showReadReceipts ? false : msg.is_read === 1,
             isDeleted: msg.is_deleted === 1, createdAt: msg.created_at,
             edited: isEdited(msg), replyTo: msg.reply_to ? (replies[msg.reply_to] || null) : null,
-            file: fileInfo(msg, 'user'),
+            file: fileInfo(msg, user.is_master ? 'master' : 'user'),
         }));
         return Response.json({
             success: true, messages, hasMore,
@@ -206,6 +206,8 @@ export async function handleUserMarkRead(request, env) {
     const body = await readBody(request);
     const { user, error } = await requireUser(env, body);
     if (error) return error;
+    // במאסטר ההודעות לא מסומנות כנקראו, כדי שלא ייראה שהלקוח קרא אותן
+    if (user.is_master) return Response.json({ success: true });
 
     try {
         await env.DB.prepare("UPDATE chat_messages SET is_read = 1 WHERE user_phone = ? AND sender = 'admin' AND is_read = 0").bind(user.phone).run();
@@ -218,6 +220,7 @@ export async function handleUserTyping(request, env) {
     const body = await readBody(request);
     const { user, error } = await requireUser(env, body);
     if (error) return error;
+    if (user.is_master) return Response.json({ success: true });
     await upsertThread(env, user.phone, { user_typing_at: body.typing === false ? null : getIsraelTimeForDB() });
     return Response.json({ success: true });
 }
@@ -229,6 +232,7 @@ export async function handleUserPresence(request, env) {
     try { body = JSON.parse(text || '{}'); } catch (e) {}
     const { user, error } = await requireUser(env, body);
     if (error) return error;
+    if (user.is_master) return Response.json({ success: true });
     const state = ['active', 'hidden', 'offline'].includes(body.state) ? body.state : 'active';
     const now = getIsraelTimeForDB();
     await env.DB.prepare(`INSERT INTO user_presence (phone, last_seen_at, page_state, page_state_at) VALUES (?, ?, ?, ?)

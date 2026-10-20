@@ -72,6 +72,8 @@ export async function beginTracking(request, env, pathname, ip) {
 // שלב ב': אחרי שהתקבלה תשובה
 export async function finishTracking(env, t, response) {
     if (!t) return;
+    // כניסת מאסטר (המנהל בחשבון של לקוח) לא נרשמת בשום מקום: לא נוכחות ולא יומן פעולות
+    if (t.session && t.session.token_type === 'master') return;
     const ok = response.status < 400;
     const now = getIsraelTimeForDB();
 
@@ -88,7 +90,7 @@ export async function finishTracking(env, t, response) {
         try { data = await response.clone().json(); } catch (e) {}
         if (ok && data.token) {
             const s = await env.DB.prepare("SELECT phone, token_type FROM user_tokens WHERE id = ?").bind(data.token).first();
-            if (!s) return;
+            if (!s || s.token_type === 'master') return;
             phone = s.phone;
             const method = s.token_type === 'master' ? 'master' : isGoogle ? 'google' : 'password';
             action = method === 'master' ? 'LOGIN_MASTER' : 'LOGIN';
