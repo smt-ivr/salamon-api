@@ -270,11 +270,13 @@ export const SETTING_DEFAULTS = {
     admin_presence_at: '',
     // חשבון האתר היחיד שמורשה להיכנס למרכז השליטה כמנהל-על
     super_admin_phone: '',
+    // גישה לקבצים בצ'אט: '1' לפי חיבור (עוגייה, קישור קבוע), '0' לפי טוקן (קישור חתום ומוגבל בזמן)
+    file_access_cookie: '1',
 };
 
 // הגדרות שהמנהל יכול לערוך ממסך ההגדרות
 export const EDITABLE_SETTINGS = ['notify_admin_enabled', 'notify_idle_minutes', 'notify_cooldown_minutes',
-    'admin_show_presence', 'admin_show_typing', 'admin_show_read_receipts'];
+    'admin_show_presence', 'admin_show_typing', 'admin_show_read_receipts', 'file_access_cookie'];
 
 export async function getSettings(env) {
     const { results } = await env.DB.prepare("SELECT key, value FROM app_settings").all();

@@ -11,7 +11,7 @@ import { getSettings, setSettings, EDITABLE_SETTINGS } from './schema.js';
 import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
 import { logActivity } from './activity.js';
-import { readUpload, storeFile, storeThumb, removeFiles, fileInfoWithLinks, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
+import { readUpload, storeFile, storeThumb, removeFiles, fileInfoWithLinks, cookieMode, resetFileModeCache, sessionCookie, withCookies, USER_COOKIE, ADMIN_COOKIE, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -108,11 +108,12 @@ export async function handleUserGetChat(request, env) {
             edited: isEdited(msg), replyTo: msg.reply_to ? (replies[msg.reply_to] || null) : null,
             file: await fileInfoWithLinks(env, request, msg, user.is_master ? 'master' : 'user'),
         })));
-        return Response.json({
+        // עוגיית החיבור לקבצים מתחדשת עם כל טעינה של הצ'אט, לפני שהדפדפן טוען את הקבצים
+        return withCookies(Response.json({
             success: true, messages, hasMore,
             adminTyping: vis.showTyping && isFresh(thread && thread.admin_typing_at, TYPING_SECONDS),
             admin: vis.admin,
-        });
+        }), [await cookieMode(env) ? sessionCookie(request, USER_COOKIE, body.userToken) : null]);
     } catch (e) { return Response.json({ error: "שגיאה בשליפת ההודעות" }, { status: 500 }); }
 }
 
@@ -391,13 +392,13 @@ export async function handleAdminGetChat(request, env) {
         })));
         const t = thread || {};
         const p = presence[phone] || {};
-        return Response.json({
+        return withCookies(Response.json({
             success: true, messages, hasMore, userName: userName || 'משתמש לא מזוהה',
             userTyping: isFresh(t.user_typing_at, TYPING_SECONDS),
             presence: { online: !!p.online, status: p.status || 'offline', lastSeenAt: p.lastSeenAt || null, device: p.device || '' },
             thread: { pinned: t.pinned === 1, archived: t.archived === 1, note: t.note || '', userSeenAt: t.user_seen_at || null, userNotifiedAt: t.user_notified_at || null },
             user: user ? { hasAccount: true, email: user.email || '', receiveEmails: user.receive_emails !== 0 } : { hasAccount: false },
-        });
+        }), [await cookieMode(env) ? sessionCookie(request, ADMIN_COOKIE, body.adminToken) : null]);
     } catch (e) { return Response.json({ error: "שגיאה בשליפת הודעות" }, { status: 500 }); }
 }
 
@@ -574,10 +575,11 @@ export async function handleAdminChatSettings(request, env) {
         const clamp = (v, min, max) => String(Math.min(max, Math.max(min, Math.round(Number(v) || min))));
         if (input.notify_idle_minutes !== undefined) values.notify_idle_minutes = clamp(input.notify_idle_minutes, 1, 240);
         if (input.notify_cooldown_minutes !== undefined) values.notify_cooldown_minutes = clamp(input.notify_cooldown_minutes, 1, 1440);
-        for (const k of ['admin_show_presence', 'admin_show_typing', 'admin_show_read_receipts']) {
+        for (const k of ['admin_show_presence', 'admin_show_typing', 'admin_show_read_receipts', 'file_access_cookie']) {
             if (input[k] !== undefined) values[k] = input[k] ? '1' : '0';
         }
         await setSettings(env, values, getIsraelTimeForDB());
+        if (values.file_access_cookie !== undefined) resetFileModeCache();
     }
 
     const s = await getSettings(env);

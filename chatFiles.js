@@ -1,7 +1,9 @@
 // chatFiles.js
 // קבצים מצורפים בצ'אט: הלקוח שולח למנהל והמנהל ללקוח. הקבצים נשמרים בשרת הקבצים של קלאודפלייר (R2, ה-binding FILES).
-// אין קישור ציבורי: מי שמחובר (הלקוח בשיחה שלו, או המנהל) מקבל קישור חתום ומוגבל בזמן לכל קובץ.
-// הקובץ נטען ישירות מהקישור (גם בסינון כמו נטפרי), והקישור לא עובד אחרי שפג או אם שונה בו משהו.
+// הקובץ נטען ישירות מקישור (גם בסינון כמו נטפרי), בשתי שיטות שנבחרות בהגדרות:
+// • לפי חיבור (ברירת מחדל, כמו גוגל): קישור קבוע לכל קובץ, וכל פתיחה נבדקת מול עוגיית חיבור מאובטחת (HttpOnly),
+//   כך שהקישור לא עובד אצל מי שאינו מחובר כבעל השיחה או כמנהל.
+// • לפי טוקן: קישור חתום ומוגבל בזמן, שלא עובד אחרי שפג או אם שונה בו משהו.
 // המנהל יכול להגביל קובץ ששלח: צפייה חד-פעמית, מספר צפיות, או תוקף.
 
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
@@ -237,6 +239,45 @@ async function fileLink(env, base, id, kind, seconds, bucket = true) {
     return `${base}/chat/f/${id}/${kind}/${exp}/${await signature(env, id, kind, exp)}`;
 }
 
+// ---------- גישה לפי חיבור (עוגייה) ----------
+export const USER_COOKIE = 'sal_s';
+export const ADMIN_COOKIE = 'sal_a';
+let modeCache = { at: 0, cookie: true };
+
+export async function cookieMode(env) {
+    if (Date.now() - modeCache.at < 30000) return modeCache.cookie;
+    const r = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'file_access_cookie'").first().catch(() => null);
+    modeCache = { at: Date.now(), cookie: !(r && r.value === '0') };
+    return modeCache.cookie;
+}
+export function resetFileModeCache() { modeCache.at = 0; }
+
+function cookiePath(request) {
+    const p = new URL(request.url).pathname;
+    const i = p.indexOf('/api/');
+    return (i >= 0 ? p.slice(0, i) : '') + '/api';
+}
+// עוגיית חיבור לקבצים: נגישה רק לשרת (HttpOnly), רק ב-HTTPS ורק לנתיבי ה-API. נמחקת עם סגירת הדפדפן,
+// ומתחדשת בכל טעינה של הצ'אט כל עוד החיבור באתר בתוקף
+export function sessionCookie(request, name, token) {
+    return `${name}=${encodeURIComponent(token)}; Path=${cookiePath(request)}; HttpOnly; Secure; SameSite=Lax`;
+}
+export function clearCookie(request, name) {
+    return `${name}=; Path=${cookiePath(request)}; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+}
+function readCookie(request, name) {
+    for (const part of (request.headers.get('cookie') || '').split(';')) {
+        const i = part.indexOf('=');
+        if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+    }
+    return null;
+}
+export function withCookies(response, cookies) {
+    const r = new Response(response.body, response);
+    for (const c of cookies) if (c) r.headers.append('Set-Cookie', c);
+    return r;
+}
+
 // כתובת ה-API כפי שהדפדפן פנה אליה (למשל https://smti.uk/salamon/api)
 function apiBaseOf(request) {
     const url = new URL(request.url);
@@ -250,6 +291,13 @@ export async function fileInfoWithLinks(env, request, row, viewer = 'user') {
     if (!info || !info.available) return info;
     if (viewer === 'user' && row.sender === 'admin' && isLimited(row)) return info;
     const base = apiBaseOf(request);
+    if (await cookieMode(env)) {
+        // קישור קבוע; המנהל מסומן ב-a=1 כדי שהבדיקה תיעשה מול חיבור המנהל ולא מול חיבור לקוח באותו דפדפן
+        const as = viewer === 'admin' ? '?a=1' : '';
+        info.url = `${base}/chat/file/${row.id}${as}`;
+        if (info.thumb) info.thumbUrl = `${base}/chat/file/${row.id}/thumb${as}`;
+        return info;
+    }
     info.url = await fileLink(env, base, row.id, 'f', LIST_LINK_SECONDS);
     if (info.thumb) info.thumbUrl = await fileLink(env, base, row.id, 't', LIST_LINK_SECONDS);
     return info;
@@ -275,6 +323,13 @@ export async function handleChatFileLink(request, env) {
     }
     const base = apiBaseOf(request);
     const limited = viewer === 'user' && row.sender === 'admin' && isLimited(row);
+    if (await cookieMode(env)) {
+        // קובץ מוגבל: הקישור הקבוע + אישור פתיחה ל-15 דקות (שעובד רק יחד עם חיבור הלקוח)
+        const as = viewer === 'admin' ? '?a=1' : '';
+        if (!limited) return Response.json({ success: true, url: `${base}/chat/file/${id}${as}`, thumbUrl: row.file_thumb_key ? `${base}/chat/file/${id}/thumb${as}` : undefined });
+        const exp = Math.floor(Date.now() / 1000) + OPEN_LINK_SECONDS;
+        return Response.json({ success: true, url: `${base}/chat/file/${id}?e=${exp}&g=${await signature(env, id, 'g', exp)}` });
+    }
     return Response.json({
         success: true,
         url: limited ? await fileLink(env, base, id, 'f', OPEN_LINK_SECONDS, false) : await fileLink(env, base, id, 'f', LIST_LINK_SECONDS),
@@ -287,6 +342,8 @@ export async function handleChatFileGet(request, env) {
     const url = new URL(request.url);
     const m = url.pathname.match(/\/api\/chat\/f\/(\d+)\/(f|t)\/(\d+)\/([A-Za-z0-9_-]{20,40})$/);
     if (!m || !hasFileStorage(env)) return new Response('Not Found', { status: 404 });
+    // במצב "לפי חיבור" הקישורים החתומים לא פעילים, כדי שקישור שהועבר הלאה לא יעבוד
+    if (await cookieMode(env)) return new Response("יש לפתוח את הקובץ מתוך הצ'אט באתר.", { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
     const [, idStr, kind, expStr, sig] = m;
     const exp = Number(expStr);
     if (exp < Math.floor(Date.now() / 1000)) return new Response("הקישור פג תוקף. יש לפתוח את הקובץ מחדש מתוך הצ'אט.", { status: 410, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
@@ -298,6 +355,35 @@ export async function handleChatFileGet(request, env) {
     if (row.is_deleted === 1) return new Response('Gone', { status: 410 });
     if (row.sender === 'admin' && (row.file_max_views === 0 || (row.file_expires_at && isPastIsraelTime(row.file_expires_at)))) return new Response('Gone', { status: 410 });
 
+    return serveObject(request, env, row, kind, `private, max-age=${Math.max(0, exp - Math.floor(Date.now() / 1000))}`);
+}
+
+// GET /api/chat/file/<id>[/thumb]  (?a=1 מהמרכז השליטה, ?e=&g= לקובץ מוגבל, ?dl=1 להורדה) - נבדק מול עוגיית החיבור
+export async function handleChatFileCookie(request, env) {
+    const url = new URL(request.url);
+    const m = url.pathname.match(/\/api\/chat\/file\/(\d+)(\/thumb)?$/);
+    if (!m || !hasFileStorage(env)) return new Response('Not Found', { status: 404 });
+    const text = (msg, status) => new Response(msg, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
+    if (!(await cookieMode(env))) return text("יש לפתוח את הקובץ מתוך הצ'אט באתר.", 403);
+    const id = Number(m[1]), thumb = !!m[2];
+    const asAdmin = url.searchParams.get('a') === '1';
+    const creds = asAdmin ? { adminToken: readCookie(request, ADMIN_COOKIE) } : { userToken: readCookie(request, USER_COOKIE) };
+    if (!creds.adminToken && !creds.userToken) return text('יש להתחבר לאתר כדי לפתוח את הקובץ.', 401);
+    const { error, viewer, row } = await resolveViewer(env, creds, id);
+    if (error) return text(error.status === 401 ? 'יש להתחבר לאתר כדי לפתוח את הקובץ.' : 'הקובץ לא נמצא או שאין לך גישה אליו.', error.status);
+
+    if (viewer === 'user' && row.sender === 'admin' && isLimited(row)) {
+        // קובץ מוגבל נפתח רק דרך הצ'אט (שם נספרת הצפייה), עם אישור פתיחה בתוקף
+        if (thumb) return text('לא זמין', 403);
+        const e = Number(url.searchParams.get('e'));
+        if (!e || e < Math.floor(Date.now() / 1000) || url.searchParams.get('g') !== await signature(env, id, 'g', e)) return text("יש לפתוח את הקובץ מתוך הצ'אט באתר.", 403);
+        if (row.file_max_views === 0 || (row.file_expires_at && isPastIsraelTime(row.file_expires_at))) return text('הגישה לקובץ הסתיימה.', 410);
+    }
+    return serveObject(request, env, row, thumb ? 't' : 'f', 'private, no-cache');
+}
+
+async function serveObject(request, env, row, kind, cacheControl) {
+    const url = new URL(request.url);
     const key = kind === 't' ? row.file_thumb_key : row.file_key;
     if (!key) return new Response('Not Found', { status: 404 });
     const obj = await env.FILES.get(key, { range: request.headers });
@@ -310,7 +396,8 @@ export async function handleChatFileGet(request, env) {
     headers.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(kind === 't' ? 'preview.jpg' : (row.file_name || 'file'))}`);
     headers.set('X-Content-Type-Options', 'nosniff');
     headers.set('Content-Security-Policy', "default-src 'none'; sandbox");
-    headers.set('Cache-Control', `private, max-age=${Math.max(0, exp - Math.floor(Date.now() / 1000))}`);
+    headers.set('Cache-Control', cacheControl);
+    headers.set('Vary', 'Cookie');
     headers.set('Accept-Ranges', 'bytes');
     if (obj.httpEtag) headers.set('ETag', obj.httpEtag);
     const body = request.method === 'HEAD' ? null : obj.body;
