@@ -1,6 +1,7 @@
 // chatFiles.js
 // קבצים מצורפים בצ'אט: הלקוח שולח למנהל והמנהל ללקוח. הקבצים נשמרים בשרת הקבצים של קלאודפלייר (R2, ה-binding FILES).
-// אין קישור ציבורי: הקובץ נמסר רק בבקשה מאומתת של הלקוח (בשיחה שלו) או של המנהל.
+// אין קישור ציבורי: מי שמחובר (הלקוח בשיחה שלו, או המנהל) מקבל קישור חתום ומוגבל בזמן לכל קובץ.
+// הקובץ נטען ישירות מהקישור (גם בסינון כמו נטפרי), והקישור לא עובד אחרי שפג או אם שונה בו משהו.
 // המנהל יכול להגביל קובץ ששלח: צפייה חד-פעמית, מספר צפיות, או תוקף.
 
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
@@ -206,7 +207,126 @@ export async function handleChatFileThumb(request, env) {
     return Response.json({ success: true });
 }
 
-// POST /api/chat/file  { userToken | adminToken, messageId, download }
+// ---------- קישורים חתומים ----------
+// הקישור: /api/chat/f/<id>/<f|t>/<תפוגה>/<חתימה>. החתימה (HMAC) מבוססת על סוד שנשמר במסד ולא יוצא ממנו.
+const LIST_LINK_SECONDS = 6 * 3600;   // קישורים שמגיעים עם רשימת ההודעות
+const LINK_BUCKET_SECONDS = 3600;     // מעגלים את התפוגה לשעה, כדי שהקישור לא ישתנה בכל רענון של הצ'אט
+const OPEN_LINK_SECONDS = 15 * 60;    // קישור לקובץ מוגבל, שנוצר ברגע הפתיחה
+let signKey = null;
+
+async function signingKey(env) {
+    if (signKey) return signKey;
+    let row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'file_link_secret'").first();
+    if (!row || !row.value) {
+        const secret = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('');
+        await env.DB.prepare("INSERT INTO app_settings (key, value, updated_at) VALUES ('file_link_secret', ?, ?) ON CONFLICT(key) DO NOTHING").bind(secret, getIsraelTimeForDB()).run();
+        row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'file_link_secret'").first();
+    }
+    signKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(row.value), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return signKey;
+}
+
+async function signature(env, id, kind, exp) {
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await signingKey(env), new TextEncoder().encode(`${id}.${kind}.${exp}`)));
+    return btoa(String.fromCharCode(...mac.subarray(0, 18))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function fileLink(env, base, id, kind, seconds, bucket = true) {
+    const now = Math.floor(Date.now() / 1000);
+    const exp = bucket ? Math.ceil((now + seconds) / LINK_BUCKET_SECONDS) * LINK_BUCKET_SECONDS : now + seconds;
+    return `${base}/chat/f/${id}/${kind}/${exp}/${await signature(env, id, kind, exp)}`;
+}
+
+// כתובת ה-API כפי שהדפדפן פנה אליה (למשל https://smti.uk/salamon/api)
+function apiBaseOf(request) {
+    const url = new URL(request.url);
+    const i = url.pathname.indexOf('/api/');
+    return url.origin + (i >= 0 ? url.pathname.slice(0, i) : '') + '/api';
+}
+
+// פרטי הקובץ + קישורים חתומים. לקובץ מוגבל של הלקוח אין קישור מראש: הוא נוצר רק כשהלקוח פותח (ואז נספרת צפייה)
+export async function fileInfoWithLinks(env, request, row, viewer = 'user') {
+    const info = fileInfo(row, viewer);
+    if (!info || !info.available) return info;
+    if (viewer === 'user' && row.sender === 'admin' && isLimited(row)) return info;
+    const base = apiBaseOf(request);
+    info.url = await fileLink(env, base, row.id, 'f', LIST_LINK_SECONDS);
+    if (info.thumb) info.thumbUrl = await fileLink(env, base, row.id, 't', LIST_LINK_SECONDS);
+    return info;
+}
+
+// POST /api/chat/file-link  { userToken | adminToken, messageId }  - פתיחת קובץ: בדיקת הרשאה, ספירת צפייה וקישור קצר-מועד
+export async function handleChatFileLink(request, env) {
+    if (!hasFileStorage(env)) return Response.json({ error: "שרת הקבצים לא מחובר" }, { status: 503 });
+    const body = await request.json().catch(() => ({}));
+    const id = Number(body.messageId);
+    if (!Number.isInteger(id) || id <= 0) return Response.json({ error: "חסר מזהה קובץ" }, { status: 400 });
+    const { error, viewer, phone, row } = await resolveViewer(env, body, id);
+    if (error) return error;
+
+    if (viewer === 'master') await logMaster(env, { phone, action: 'FILE_OPEN', details: row.file_name || '', ip: request.headers.get('cf-connecting-ip') || '', userAgent: request.headers.get('user-agent') || '', tokenId: body.userToken }).catch(() => {});
+    if (viewer === 'user' && row.sender === 'admin') {
+        const reason = blockReason(row);
+        if (reason) return Response.json({ error: BLOCKED_TEXT[reason], code: reason }, { status: 410 });
+        // ספירה אטומית, כדי ששתי פתיחות במקביל לא יעברו את המגבלה
+        const upd = await env.DB.prepare(`UPDATE chat_messages SET file_views = COALESCE(file_views, 0) + 1, file_last_viewed_at = ?
+            WHERE id = ? AND is_deleted = 0 AND (file_max_views IS NULL OR COALESCE(file_views, 0) < file_max_views)`).bind(getIsraelTimeForDB(), id).run();
+        if (!upd.meta || !upd.meta.changes) return Response.json({ error: BLOCKED_TEXT.used, code: 'used' }, { status: 410 });
+    }
+    const base = apiBaseOf(request);
+    const limited = viewer === 'user' && row.sender === 'admin' && isLimited(row);
+    return Response.json({
+        success: true,
+        url: limited ? await fileLink(env, base, id, 'f', OPEN_LINK_SECONDS, false) : await fileLink(env, base, id, 'f', LIST_LINK_SECONDS),
+        thumbUrl: row.file_thumb_key && !limited ? await fileLink(env, base, id, 't', LIST_LINK_SECONDS) : undefined,
+    });
+}
+
+// GET /api/chat/f/<id>/<f|t>/<exp>/<sig>  (?dl=1 להורדה)
+export async function handleChatFileGet(request, env) {
+    const url = new URL(request.url);
+    const m = url.pathname.match(/\/api\/chat\/f\/(\d+)\/(f|t)\/(\d+)\/([A-Za-z0-9_-]{20,40})$/);
+    if (!m || !hasFileStorage(env)) return new Response('Not Found', { status: 404 });
+    const [, idStr, kind, expStr, sig] = m;
+    const exp = Number(expStr);
+    if (exp < Math.floor(Date.now() / 1000)) return new Response("הקישור פג תוקף. יש לפתוח את הקובץ מחדש מתוך הצ'אט.", { status: 410, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+    if (sig !== await signature(env, Number(idStr), kind, exp)) return new Response('Forbidden', { status: 403 });
+
+    const row = await env.DB.prepare(`SELECT ${FILE_COLUMNS} FROM chat_messages WHERE id = ?`).bind(Number(idStr)).first();
+    if (!row || !row.file_key) return new Response('Not Found', { status: 404 });
+    // מחיקה, ביטול גישה או פקיעת תוקף חוסמים גם קישור שכבר ניתן
+    if (row.is_deleted === 1) return new Response('Gone', { status: 410 });
+    if (row.sender === 'admin' && (row.file_max_views === 0 || (row.file_expires_at && isPastIsraelTime(row.file_expires_at)))) return new Response('Gone', { status: 410 });
+
+    const key = kind === 't' ? row.file_thumb_key : row.file_key;
+    if (!key) return new Response('Not Found', { status: 404 });
+    const obj = await env.FILES.get(key, { range: request.headers });
+    if (!obj) return new Response('Not Found', { status: 404 });
+
+    const type = kind === 't' ? ((obj.httpMetadata && obj.httpMetadata.contentType) || 'image/jpeg') : typeOf(row.file_type, row.file_name);
+    const inline = INLINE_TYPES.test(type) && url.searchParams.get('dl') !== '1';
+    const headers = new Headers();
+    headers.set('Content-Type', inline ? type : 'application/octet-stream');
+    headers.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(kind === 't' ? 'preview.jpg' : (row.file_name || 'file'))}`);
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    headers.set('Cache-Control', `private, max-age=${Math.max(0, exp - Math.floor(Date.now() / 1000))}`);
+    headers.set('Accept-Ranges', 'bytes');
+    if (obj.httpEtag) headers.set('ETag', obj.httpEtag);
+    const body = request.method === 'HEAD' ? null : obj.body;
+    if (obj.range && request.headers.get('range')) {
+        const r = obj.range;
+        const offset = 'suffix' in r ? Math.max(0, obj.size - r.suffix) : (r.offset || 0);
+        const length = 'suffix' in r ? obj.size - offset : (r.length ?? obj.size - offset);
+        headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${obj.size}`);
+        headers.set('Content-Length', String(length));
+        return new Response(body, { status: 206, headers });
+    }
+    headers.set('Content-Length', String(obj.size));
+    return new Response(body, { headers });
+}
+
+// POST /api/chat/file  { userToken | adminToken, messageId, download }  (גרסה קודמת של האתר: מחזיר את הקובץ עצמו)
 // הקובץ נמסר רק למי שמחובר: הלקוח - רק משיחה שלו, המנהל - מכל שיחה.
 // פתיחה של הלקוח לקובץ שהמנהל שלח נספרת, ונחסמת כשנגמרו הצפיות או פג התוקף.
 export async function handleChatFile(request, env) {

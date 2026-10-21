@@ -11,7 +11,7 @@ import { getSettings, setSettings, EDITABLE_SETTINGS } from './schema.js';
 import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
 import { logActivity } from './activity.js';
-import { readUpload, storeFile, storeThumb, removeFiles, fileInfo, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
+import { readUpload, storeFile, storeThumb, removeFiles, fileInfoWithLinks, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -100,14 +100,14 @@ export async function handleUserGetChat(request, env) {
         ]);
         const replies = await attachReplies(env, rows);
         const vis = adminVisibility(settings);
-        const messages = rows.map(msg => ({
+        const messages = await Promise.all(rows.map(async msg => ({
             id: msg.id, sender: msg.sender, text: msg.is_deleted === 1 ? DELETED_TEXT : msg.message_text,
             // כשאישורי הקריאה מוסתרים, הלקוח רואה רק "נשלח" על ההודעות שלו
             isRead: msg.sender === 'user' && !vis.showReadReceipts ? false : msg.is_read === 1,
             isDeleted: msg.is_deleted === 1, createdAt: msg.created_at,
             edited: isEdited(msg), replyTo: msg.reply_to ? (replies[msg.reply_to] || null) : null,
-            file: fileInfo(msg, user.is_master ? 'master' : 'user'),
-        }));
+            file: await fileInfoWithLinks(env, request, msg, user.is_master ? 'master' : 'user'),
+        })));
         return Response.json({
             success: true, messages, hasMore,
             adminTyping: vis.showTyping && isFresh(thread && thread.admin_typing_at, TYPING_SECONDS),
@@ -385,10 +385,10 @@ export async function handleAdminGetChat(request, env) {
         const { results: links } = await env.DB.prepare("SELECT message_id, created_at, sent_ok, used_at, used_ip FROM chat_email_links WHERE phone = ? ORDER BY created_at").bind(phone).all();
         const emailByMsg = {};
         for (const l of links || []) emailByMsg[l.message_id] = { sentAt: l.created_at, ok: l.sent_ok === 1, openedAt: l.used_at, openedIp: l.used_ip };
-        const messages = rows.map(({ file_key, file_token, ...m }) => ({
+        const messages = await Promise.all(rows.map(async ({ file_key, file_token, file_thumb_key, ...m }) => ({
             ...m, edited: isEdited(m), reply: m.reply_to ? (replies[m.reply_to] || null) : null, email: emailByMsg[m.id] || null,
-            file: fileInfo({ ...m, file_key }, 'admin'),
-        }));
+            file: await fileInfoWithLinks(env, request, { ...m, file_key, file_thumb_key }, 'admin'),
+        })));
         const t = thread || {};
         const p = presence[phone] || {};
         return Response.json({
@@ -541,7 +541,7 @@ export async function handleAdminFileLimits(request, env) {
     for (const [k, v] of Object.entries(fields)) if (v !== undefined) { sets.push(`${k} = ?`); vals.push(v); }
     await env.DB.prepare(`UPDATE chat_messages SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).bind(...vals, getIsraelTimeForDB(), id).run();
     const updated = await env.DB.prepare("SELECT * FROM chat_messages WHERE id = ?").bind(id).first();
-    return Response.json({ success: true, file: fileInfo(updated, 'admin') });
+    return Response.json({ success: true, file: await fileInfoWithLinks(env, request, updated, 'admin') });
 }
 
 export async function handleAdminSearchMessages(request, env) {

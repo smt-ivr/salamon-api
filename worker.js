@@ -20,7 +20,7 @@ import {
     handleAdminEditMessage, handleAdminTyping, handleAdminThreadMeta, handleAdminMarkUnread, handleAdminSearchMessages, handleAdminChatSettings, handleAdminChatTestEmail,
     handleUserSendFile, handleAdminSendFile, handleAdminFileLimits
 } from './chat.js';
-import { handleChatFile, handleChatFileThumb } from './chatFiles.js';
+import { handleChatFile, handleChatFileThumb, handleChatFileLink, handleChatFileGet } from './chatFiles.js';
 import { handleAdminMaster, handleAdminMasterSave, handleAdminMasterEnd } from './master.js';
 import { ensureSchema } from './schema.js';
 import { handleAccountSecurity } from './account.js';
@@ -135,6 +135,8 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) response = await handleUserSendMessage(request, env, ctx);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/send-file")) response = await handleUserSendFile(request, env, ctx);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/file")) response = await handleChatFile(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/chat/file-link")) response = await handleChatFileLink(request, env);
+            else if ((request.method === "GET" || request.method === "HEAD") && pathname.includes("/api/chat/f/")) response = await handleChatFileGet(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/file-thumb")) response = await handleChatFileThumb(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/master")) response = await handleAdminMaster(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/master/save")) response = await handleAdminMasterSave(request, env);
