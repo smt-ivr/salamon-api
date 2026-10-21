@@ -8,6 +8,7 @@ import { authenticateUser } from './auth.js';
 import { getSettings, setSettings } from './schema.js';
 import { getNameFromIni } from './yemot.js';
 import { describeDevice } from './activity.js';
+import { withCookies, clearCookie, ADMIN_COOKIE } from './chatFiles.js';
 
 const IDLE_MINUTES = 120;
 const REMEMBER_MINUTES = 30 * 24 * 60;
@@ -143,7 +144,7 @@ export async function handleAdminLogout(request, env) {
         cache.delete(body.adminToken);
     }
     await setSettings(env, { admin_presence_state: 'offline', admin_presence_at: getIsraelTimeForDB() }, getIsraelTimeForDB());
-    return Response.json({ success: true });
+    return withCookies(Response.json({ success: true }), [clearCookie(request, ADMIN_COOKIE)]);
 }
 
 export async function handleAdminSessions(request, env) {

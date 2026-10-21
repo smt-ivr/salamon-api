@@ -1,6 +1,7 @@
 // auth.js
 import { checkPhoneStatus, getNameFromIni } from './yemot.js';
 import { masterConfig, masterMinutes } from './master.js';
+import { withCookies, clearCookie, USER_COOKIE } from './chatFiles.js';
 import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from './timeUtils.js';
 import { sendSecurityAlert } from './emailService.js';
 
@@ -199,7 +200,7 @@ export async function handleLogout(request, env) {
         if (body.userToken) {
             await env.DB.prepare("DELETE FROM user_tokens WHERE id = ?").bind(body.userToken).run();
         }
-        return Response.json({ success: true, message: "התנתקת מהמערכת בהצלחה" });
+        return withCookies(Response.json({ success: true, message: "התנתקת מהמערכת בהצלחה" }), [clearCookie(request, USER_COOKIE)]);
     } catch (error) { return Response.json({ error: "שגיאת שרת פנימית בעת ניתוק" }, { status: 500 }); }
 }
 
