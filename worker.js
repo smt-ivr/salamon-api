@@ -22,6 +22,7 @@ import {
 } from './chat.js';
 import { handleChatFile, handleChatFileThumb, handleChatFileLink, handleChatFileGet, handleChatFileCookie } from './chatFiles.js';
 import { handleAdminMaster, handleAdminMasterSave, handleAdminMasterEnd } from './master.js';
+import { handleAdminGroupAddMembers, handleAdminGroupDelete, handleAdminGroupSave, handleAdminGroups, handleAdminGuestBlock, handleGroupDelete, handleGroupEdit, handleGroupFileThumb, handleGroupJoin, handleGroupLeave, handleGroupMessages, handleGroupOpen, handleGroupPin, handleGroupRead, handleGroupSend, handleGroupSendFile, handleGroupTyping, handleGroupsMe, handleInviteAccept, handleInviteInfo, handleModAction, handleModInvites, handleModLog, handleModMembers, handleModSettings, handleGroupFileGet } from './groups.js';
 import { ensureSchema } from './schema.js';
 import { handleAccountSecurity } from './account.js';
 import { handleAdminLogin, handleAdminLoginWithUser, handleAdminMe, handleAdminLogout, handleAdminSessions, handleAdminAccount, handleAdminPresence, isMainAdmin, sessionExpired } from './adminAuth.js';
@@ -130,6 +131,33 @@ export default {
                 }
             }
 
+            // צ'אט קבוצתי
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/me")) response = await handleGroupsMe(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/open")) response = await handleGroupOpen(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/messages")) response = await handleGroupMessages(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/send")) response = await handleGroupSend(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/send-file")) response = await handleGroupSendFile(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/file-thumb")) response = await handleGroupFileThumb(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/edit")) response = await handleGroupEdit(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/delete")) response = await handleGroupDelete(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/pin")) response = await handleGroupPin(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/read")) response = await handleGroupRead(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/typing")) response = await handleGroupTyping(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/join")) response = await handleGroupJoin(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/leave")) response = await handleGroupLeave(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/invite/info")) response = await handleInviteInfo(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/invite/accept")) response = await handleInviteAccept(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/mod/members")) response = await handleModMembers(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/mod/action")) response = await handleModAction(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/mod/invites")) response = await handleModInvites(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/mod/settings")) response = await handleModSettings(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/groups/mod/log")) response = await handleModLog(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/groups")) response = await handleAdminGroups(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/groups/save")) response = await handleAdminGroupSave(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/groups/delete")) response = await handleAdminGroupDelete(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/groups/add-members")) response = await handleAdminGroupAddMembers(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/groups/guest-block")) response = await handleAdminGuestBlock(request, env);
+            else if ((request.method === "GET" || request.method === "HEAD") && pathname.includes("/api/groups/f/")) response = await handleGroupFileGet(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/list")) response = await handleUserGetChat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/unread")) response = await handleUserCheckUnread(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/chat/send")) response = await handleUserSendMessage(request, env, ctx);

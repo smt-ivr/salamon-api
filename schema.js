@@ -70,6 +70,91 @@ const STATEMENTS = [
         user_agent TEXT
     )`,
 
+    // צ'אט קבוצתי
+    `CREATE TABLE IF NOT EXISTS chat_groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        color TEXT DEFAULT '',
+        settings TEXT DEFAULT '{}',
+        archived INTEGER DEFAULT 0,
+        last_message_id INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS group_members (
+        group_id INTEGER NOT NULL,
+        member_key TEXT NOT NULL,
+        role TEXT DEFAULT 'member',
+        status TEXT DEFAULT 'active',
+        display_name TEXT,
+        muted_until TEXT,
+        banned_until TEXT,
+        ban_reason TEXT,
+        joined_at TEXT,
+        added_by TEXT,
+        last_read_id INTEGER DEFAULT 0,
+        last_seen_at TEXT,
+        typing_at TEXT,
+        last_post_at TEXT,
+        PRIMARY KEY (group_id, member_key)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_group_members_key ON group_members (member_key)`,
+    `CREATE TABLE IF NOT EXISTS group_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        sender_key TEXT,
+        sender_name TEXT,
+        sender_role TEXT,
+        text TEXT DEFAULT '',
+        reply_to INTEGER,
+        file_key TEXT, file_name TEXT, file_type TEXT, file_size INTEGER, file_thumb_key TEXT, file_meta TEXT,
+        pinned INTEGER DEFAULT 0,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_by TEXT,
+        edited_at TEXT,
+        kind TEXT DEFAULT 'msg',
+        created_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_group_messages_group ON group_messages (group_id, id)`,
+    `CREATE TABLE IF NOT EXISTS group_guests (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        phone TEXT,
+        token_hash TEXT,
+        created_at TEXT,
+        last_seen_at TEXT,
+        blocked INTEGER DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_group_guests_token ON group_guests (token_hash)`,
+    `CREATE TABLE IF NOT EXISTS group_invites (
+        id TEXT PRIMARY KEY,
+        group_id INTEGER,
+        code TEXT UNIQUE,
+        created_by TEXT,
+        created_at TEXT,
+        expires_at TEXT,
+        max_uses INTEGER,
+        uses INTEGER DEFAULT 0,
+        role TEXT DEFAULT 'member',
+        approval INTEGER DEFAULT 0,
+        allow_guests INTEGER DEFAULT 1,
+        allow_users INTEGER DEFAULT 1,
+        revoked INTEGER DEFAULT 0,
+        note TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS group_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER,
+        actor TEXT,
+        actor_name TEXT,
+        action TEXT,
+        target TEXT,
+        details TEXT,
+        created_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_group_log_group ON group_log (group_id, id)`,
+
     // יומן התחברויות ופעולות מאסטר (נפרד מהיומן של הלקוח, ורק המנהל הראשי רואה אותו)
     `CREATE TABLE IF NOT EXISTS master_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
