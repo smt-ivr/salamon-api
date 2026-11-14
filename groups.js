@@ -9,6 +9,7 @@ import { getIsraelTimeForDB, getFutureIsraelTimeForDB, isPastIsraelTime } from '
 import { getNameFromIni } from './yemot.js';
 import { getSettings, setSettings } from './schema.js';
 import { readUpload, storeFile, storeThumb, removeFiles, typeOf } from './chatFiles.js';
+import { pushGroupMessage } from './push.js';
 
 const MAX_TEXT_DEFAULT = 2000;
 const PAGE = 80;
@@ -451,6 +452,8 @@ async function insertMessage(env, group, actor, member, fields) {
         env.DB.prepare("UPDATE chat_groups SET last_message_id = ?, updated_at = ? WHERE id = ?").bind(id, now, group.id),
         ...(member ? [env.DB.prepare("UPDATE group_members SET last_post_at = ?, typing_at = NULL, last_read_id = MAX(COALESCE(last_read_id, 0), ?) WHERE group_id = ? AND member_key = ?").bind(now, id, group.id, actor.key)] : []),
     ]);
+    // התראה לאפליקציית האנדרואיד (כשאין Firebase מוגדר, זה חוזר מיד)
+    await pushGroupMessage(env, group, actor.key, name, fields.text || (fields.file_name ? `📎 ${fields.file_name}` : ''));
     return { id, at: now };
 }
 

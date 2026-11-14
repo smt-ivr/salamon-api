@@ -12,6 +12,7 @@ import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
 import { logActivity } from './activity.js';
 import { readUpload, storeFile, storeThumb, removeFiles, fileInfoWithLinks, cookieMode, resetFileModeCache, sessionCookie, withCookies, USER_COOKIE, ADMIN_COOKIE, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
+import { pushChatReply } from './push.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -425,6 +426,8 @@ export async function handleAdminSendMessage(request, env, ctx) {
 
         const messageId = res.meta && res.meta.last_row_id;
         const email = await emailIfAsked(env, ctx, phone, messageId, body.sendEmail === true || body.emailMode === 'always');
+        const push = pushChatReply(env, phone, text);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(push); else await push;
         return Response.json({ success: true, message: "ההודעה נשלחה", id: messageId, email });
     } catch (e) { return Response.json({ error: "שגיאה בשליחת הודעה" }, { status: 500 }); }
 }
@@ -469,6 +472,8 @@ export async function handleAdminSendFile(request, env, ctx) {
         await upsertThread(env, phone, { admin_typing_at: null, archived: 0 });
         const messageId = res.meta && res.meta.last_row_id;
         const email = await emailIfAsked(env, ctx, phone, messageId, wantEmail, fileMode);
+        const push = pushChatReply(env, phone, text || `📎 ${f.file_name || 'קובץ'}`);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(push); else await push;
         return Response.json({ success: true, message: "הקובץ נשלח", id: messageId, email });
     } catch (e) { console.error('chat file', e); return Response.json({ error: "שגיאה בשליחת הקובץ" }, { status: 500 }); }
 }

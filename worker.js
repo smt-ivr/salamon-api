@@ -1,5 +1,6 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
+import { handlePushRegister, handlePushUnregister, checkNewFeedMessages } from './push.js';
 import { handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
@@ -85,6 +86,8 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/phone-stats")) response = await handleAdminVoicePhoneStats(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/audience")) response = await handleAdminVoiceAudience(request, env);
             
+            else if (request.method === "POST" && pathname.endsWith("/api/push/register")) response = await handlePushRegister(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/push/unregister")) response = await handlePushUnregister(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/messages/list")) response = await handleGetMessages(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/messages/upload")) response = await handleUploadMessage(request, env);
             else if (request.method === "GET" && pathname.endsWith("/api/messages/stream")) response = await handleStreamMessage(request, env, ctx);
@@ -273,10 +276,14 @@ export default {
         } catch (error) { return Response.json({ error: error.message }, { status: 500, headers: corsHeaders }); }
     },
 
-    // משימה מתוזמנת (ראו triggers ב-wrangler.toml): אכיפת נעילות שמות וניקוי יומן ישן
+    // משימה מתוזמנת (ראו triggers ב-wrangler.toml): התראות לאפליקציה, אכיפת נעילות שמות וניקוי יומן ישן
     async scheduled(event, env, ctx) {
         ctx.waitUntil((async () => {
             await ensureSchema(env);
+            // כל דקה: התראות לאפליקציה על הודעות קוליות חדשות
+            await checkNewFeedMessages(env).catch(e => console.error('push feed', e));
+            // שאר המשימות רצות כל 15 דקות, כמו קודם
+            if (new Date().getUTCMinutes() % 15 !== 0) return;
             const result = await enforceNameLocks(env).catch(e => ({ error: e.message }));
             if (result.restored && result.restored.length) console.log('name locks restored', result.restored);
             if (result.error) console.error('name locks', result.error);
