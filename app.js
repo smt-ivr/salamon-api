@@ -60,8 +60,6 @@ export async function handleAppHello(request, env) {
     return json({ success: true, blocked, message: blocked ? BLOCK_MESSAGE : '' });
 }
 
-const RELEASE_API = 'https://api.github.com/repos/smt-ivr/salamon/releases/tags/android';
-
 /**
  * The APK, served from smti.uk itself (filtered browsers often block github.com).
  * Cached at the edge for a few minutes so a new version shows up quickly.
@@ -87,17 +85,18 @@ export async function handleAppInfo(request, env, ctx) {
     const key = new Request('https://smti.uk/salamon/api/app/__info-cache');
     const hit = await cache.match(key);
     if (hit) return hit;
-    let info = { version: '', size: 0, updatedAt: '' };
+    let info = null;
     try {
-        const r = await fetch(RELEASE_API, { headers: { 'user-agent': 'salamon-app-info', accept: 'application/vnd.github+json' } });
+        // Published next to the APK by the build (no GitHub API rate limits).
+        const r = await fetch(APK_URL.replace('salamon.apk', 'version.json'), { redirect: 'follow', headers: { 'user-agent': 'salamon-app-info' } });
         if (r.ok) {
             const d = await r.json();
-            const asset = (d.assets || []).find(a => a.name === 'salamon.apk');
-            const m = /גרסה\s+([\d.]+)/.exec(d.body || '');
-            info = { version: m ? m[1] : '', size: asset ? asset.size : 0, updatedAt: asset ? asset.updated_at : '' };
+            info = { version: String(d.version || ''), size: Number(d.size) || 0, updatedAt: String(d.updatedAt || '') };
         }
     } catch (e) {}
-    const res = Response.json({ success: true, ...info }, { headers: { 'cache-control': 'public, max-age=600', 'access-control-allow-origin': '*' } });
+    const res = Response.json({ success: true, ...(info || { version: '', size: 0, updatedAt: '' }) }, {
+        headers: { 'cache-control': `public, max-age=${info ? 600 : 60}`, 'access-control-allow-origin': '*' },
+    });
     const put = cache.put(key, res.clone());
     if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put;
     return res;
