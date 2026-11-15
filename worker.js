@@ -1,6 +1,7 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
 import { handlePushRegister, handlePushUnregister, checkNewFeedMessages } from './push.js';
+import { handleAppHello, handleAppDownload, handleAdminApp, handleAdminAppBlock, appBlockGuard } from './app.js';
 import { handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
@@ -53,6 +54,8 @@ export default {
                 const peek = await request.clone().json().catch(() => ({}));
                 if (peek.adminToken && !(await isMainAdmin(env, peek.adminToken))) response = sessionExpired();
             }
+            // משתמש שנחסם באפליקציה: בקשות מהאפליקציה עם הטוקן שלו נדחות (באתר בדפדפן הוא ממשיך כרגיל)
+            if (!response && !isAdminPath) response = await appBlockGuard(request, env);
             const verifySystem = new VerificationSystem(env.DB, env.YEMOT_TOKEN);
 
             if (response) { /* כבר נקבעה תשובה (חיבור מנהל לא תקף) */ }
@@ -86,6 +89,10 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/phone-stats")) response = await handleAdminVoicePhoneStats(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/voice/audience")) response = await handleAdminVoiceAudience(request, env);
             
+            else if (request.method === "POST" && pathname.endsWith("/api/app/hello")) response = await handleAppHello(request, env);
+            else if (request.method === "GET" && pathname.endsWith("/api/app/download")) response = await handleAppDownload(request, env, ctx);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/app")) response = await handleAdminApp(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/app/block")) response = await handleAdminAppBlock(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/push/register")) response = await handlePushRegister(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/push/unregister")) response = await handlePushUnregister(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/messages/list")) response = await handleGetMessages(request, env);
