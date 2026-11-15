@@ -18,7 +18,7 @@ const BLOCK_MESSAGE = 'הגישה שלך לאפליקציה נחסמה. לפרט
 function json(data, status = 200) { return Response.json(data, { status }); }
 
 let ready = false;
-async function ensureTables(env) {
+export async function ensureTables(env) {
     if (ready) return;
     await env.DB.batch([
         env.DB.prepare(`CREATE TABLE IF NOT EXISTS app_users (
@@ -38,7 +38,15 @@ async function ensureTables(env) {
             device TEXT
         )`),
         env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_app_downloads_at ON app_downloads (at)`),
+        env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_devices (token TEXT PRIMARY KEY, phone TEXT NOT NULL, platform TEXT DEFAULT 'android', app_version TEXT, created_at TEXT, last_seen_at TEXT)`),
     ]);
+    // device details for the dedicated app (also added by schema.js; done here so the app never depends on it)
+    const cols = new Set(((await env.DB.prepare("PRAGMA table_info(push_devices)").all()).results || []).map(c => c.name));
+    const want = [['kind', "TEXT DEFAULT 'web'"], ['device_id', 'TEXT'], ['device_model', 'TEXT'], ['os_version', 'TEXT'],
+        ['notify_feed', 'INTEGER DEFAULT 1'], ['notify_chat', 'INTEGER DEFAULT 1'], ['notify_groups', 'INTEGER DEFAULT 1']];
+    for (const [name, type] of want) {
+        if (!cols.has(name)) await env.DB.prepare(`ALTER TABLE push_devices ADD COLUMN ${name} ${type}`).run().catch(() => {});
+    }
     ready = true;
 }
 
@@ -79,27 +87,31 @@ async function fetchApk(ctx) {
     return res;
 }
 
-/** GET /api/app/info - version, size and date of the current APK (for the download page). */
-export async function handleAppInfo(request, env, ctx) {
+/** Latest published version (version.json next to the APK), cached at the edge for 10 minutes. */
+export async function latestAppInfo(ctx) {
     const cache = caches.default;
     const key = new Request('https://smti.uk/salamon/api/app/__info-cache');
     const hit = await cache.match(key);
-    if (hit) return hit;
+    if (hit) { try { return await hit.json(); } catch (e) {} }
     let info = null;
     try {
-        // Published next to the APK by the build (no GitHub API rate limits).
         const r = await fetch(APK_URL.replace('salamon.apk', 'version.json'), { redirect: 'follow', headers: { 'user-agent': 'salamon-app-info' } });
         if (r.ok) {
             const d = await r.json();
-            info = { version: String(d.version || ''), size: Number(d.size) || 0, updatedAt: String(d.updatedAt || '') };
+            info = { version: String(d.version || ''), versionCode: Number(d.versionCode) || 0, size: Number(d.size) || 0, updatedAt: String(d.updatedAt || '') };
         }
     } catch (e) {}
-    const res = Response.json({ success: true, ...(info || { version: '', size: 0, updatedAt: '' }) }, {
-        headers: { 'cache-control': `public, max-age=${info ? 600 : 60}`, 'access-control-allow-origin': '*' },
-    });
-    const put = cache.put(key, res.clone());
+    const out = { success: true, ...(info || { version: '', versionCode: 0, size: 0, updatedAt: '' }) };
+    const res = Response.json(out, { headers: { 'cache-control': `public, max-age=${info ? 600 : 60}` } });
+    const put = cache.put(key, res);
     if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put;
-    return res;
+    return out;
+}
+
+/** GET /api/app/info - version, size and date of the current APK (for the download page). */
+export async function handleAppInfo(request, env, ctx) {
+    const info = await latestAppInfo(ctx);
+    return Response.json(info, { headers: { 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
 }
 
 /** GET /api/app/download - counts the download and serves the current APK from smti.uk. */
