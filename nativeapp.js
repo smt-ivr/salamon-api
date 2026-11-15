@@ -8,7 +8,7 @@ import { isMainAdmin } from './adminAuth.js';
 import { getIsraelTimeForDB } from './timeUtils.js';
 import { getNameFromIni } from './yemot.js';
 import { ensureTables, latestAppInfo } from './app.js';
-import { pushEnabled, pushToPhone, pushToAllApp } from './push.js';
+import { pushEnabled, pushToPhone, pushToAllApp, getFeedStatus, checkNewFeedMessages } from './push.js';
 
 function json(data, status = 200) { return Response.json(data, { status }); }
 
@@ -325,7 +325,8 @@ export async function handleAdminNativeDevices(request, env) {
         FROM push_devices ORDER BY last_seen_at DESC LIMIT 3000`).all();
     const versions = {};
     for (const r of results || []) if (r.kind === 'native') versions[r.app_version || '?'] = (versions[r.app_version || '?'] || 0) + 1;
-    return json({ success: true, devices: results || [], versions, pushConfigured: pushEnabled(env), latest: await latestAppInfo().catch(() => null) });
+    if (body.runFeedCheck) await checkNewFeedMessages(env).catch(() => {});
+    return json({ success: true, devices: results || [], versions, pushConfigured: pushEnabled(env), latest: await latestAppInfo().catch(() => null), feedStatus: await getFeedStatus(env) });
 }
 
 /** POST /api/admin/app/push { adminToken, phone?, title, body } - to one user, or to everyone in the app. */

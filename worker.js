@@ -301,7 +301,8 @@ export default {
     // משימה מתוזמנת (ראו triggers ב-wrangler.toml): התראות לאפליקציה, אכיפת נעילות שמות וניקוי יומן ישן
     async scheduled(event, env, ctx) {
         ctx.waitUntil((async () => {
-            await ensureSchema(env);
+            // אם הכנת הטבלאות נכשלת, שאר המשימות ממשיכות (כמו בבקשות רגילות)
+            await ensureSchema(env).catch(e => console.error('schema', e));
             // כל דקה: התראות לאפליקציה על הודעות קוליות חדשות
             await checkNewFeedMessages(env).catch(e => console.error('push feed', e));
             // שאר המשימות רצות כל 15 דקות, כמו קודם
