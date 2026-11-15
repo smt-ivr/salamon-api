@@ -324,6 +324,14 @@ const COLUMNS = [
     ['system_messages', 'cta_url', 'TEXT'],
     ['system_messages', 'design', 'TEXT'],
     ['system_message_logs', 'device', 'TEXT'],
+    // האפליקציה הייעודית: פרטי מכשיר והגדרות התראות לכל מכשיר
+    ['push_devices', 'kind', "TEXT DEFAULT 'web'"],
+    ['push_devices', 'device_id', 'TEXT'],
+    ['push_devices', 'device_model', 'TEXT'],
+    ['push_devices', 'os_version', 'TEXT'],
+    ['push_devices', 'notify_feed', 'INTEGER DEFAULT 1'],
+    ['push_devices', 'notify_chat', 'INTEGER DEFAULT 1'],
+    ['push_devices', 'notify_groups', 'INTEGER DEFAULT 1'],
 ];
 
 let ready = null;

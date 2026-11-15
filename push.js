@@ -7,7 +7,7 @@
 
 import { authenticateUser } from './auth.js';
 import { getIsraelTimeForDB } from './timeUtils.js';
-import { blockedAppPhones } from './app.js';
+import { blockedAppPhones, ensureTables } from './app.js';
 
 const FEED_FOLDER = 'ivr2:/1/2';
 const FEED_URL = 'https://smti.uk/salamon/v2#feed';
@@ -48,7 +48,7 @@ export async function handlePushUnregister(request, env) {
  * שולח התראה לכל המכשירים של רשימת טלפונים, לפי ההעדפות של כל משתמש.
  * kind: 'feed' (הודעה קולית חדשה), 'chat' (תשובה מהצוות), 'group' (הודעה בקבוצה)
  */
-export async function pushToPhones(env, phones, { kind, title, body, tag, url }) {
+export async function pushToPhones(env, phones, { kind, title, body, tag, url, extra }) {
     if (!pushEnabled(env)) return { sent: 0 };
     phones = [...new Set((phones || []).filter(Boolean).map(String))];
     // מי שנחסם באפליקציה לא מקבל התראות
@@ -61,16 +61,24 @@ export async function pushToPhones(env, phones, { kind, title, body, tag, url })
         const part = phones.slice(i, i + 50);
         const marks = part.map(() => '?').join(',');
         const { results } = await env.DB.prepare(
-            `SELECT d.token, d.phone, p.prefs FROM push_devices d LEFT JOIN user_prefs p ON p.phone = d.phone WHERE d.phone IN (${marks})`
+            `SELECT d.token, d.phone, d.kind, d.notify_feed, d.notify_chat, d.notify_groups, p.prefs FROM push_devices d LEFT JOIN user_prefs p ON p.phone = d.phone WHERE d.phone IN (${marks})`
         ).bind(...part).all();
-        const targets = (results || []).filter(r => wants(r.prefs, kind));
-        const outcomes = await Promise.all(targets.map(r => sendOne(env, r.token, { title, body, tag, url })));
+        const targets = (results || []).filter(r => wants(r, kind));
+        const outcomes = await Promise.all(targets.map(r => sendOne(env, r.token, { title, body, tag, url, type: kind, extra })));
         sent += outcomes.filter(Boolean).length;
     }
     return { sent };
 }
 
-function wants(prefsJson, kind) {
+function wants(row, kind) {
+    // האפליקציה הייעודית: הגדרות לכל מכשיר, הכול דלוק כברירת מחדל
+    if (row.kind === 'native') {
+        if (kind === 'feed') return row.notify_feed !== 0;
+        if (kind === 'chat') return row.notify_chat !== 0;
+        if (kind === 'group') return row.notify_groups !== 0;
+        return true;
+    }
+    const prefsJson = row.prefs;
     let p = {};
     try { p = prefsJson ? JSON.parse(prefsJson) : {}; } catch (e) { p = {}; }
     // ברירות המחדל זהות לאתר: הודעות קוליות כבויות, צ'אט דלוק
@@ -89,7 +97,7 @@ function inQuietHours(a, b) {
     return s <= e ? cur >= s && cur < e : cur >= s || cur < e;
 }
 
-async function sendOne(env, token, { title, body, tag, url }) {
+async function sendOne(env, token, { title, body, tag, url, type, extra }) {
     try {
         const sa = serviceAccount(env);
         const access = await accessToken(env);
@@ -100,7 +108,11 @@ async function sendOne(env, token, { title, body, tag, url }) {
                 message: {
                     token,
                     // הודעת נתונים בלבד: האפליקציה מציגה אותה בעצמה, עם אותו מראה כמו בזמן שהיא פתוחה
-                    data: { title: String(title || ''), body: String(body || ''), tag: String(tag || 'salamon'), url: String(url || '') },
+                    data: {
+                        title: String(title || ''), body: String(body || ''), tag: String(tag || 'salamon'), url: String(url || ''),
+                        type: String(type || ''),
+                        ...Object.fromEntries(Object.entries(extra || {}).map(([k, v]) => [k, String(v)])),
+                    },
                     android: { priority: 'HIGH', ttl: '86400s' },
                 },
             }),
@@ -197,6 +209,7 @@ export async function pushGroupMessage(env, group, senderKey, senderName, text) 
             body: `${senderName ? senderName + ': ' : ''}${String(text || '').slice(0, 180) || '📎 קובץ'}`,
             tag: `salamon-group-${group.id}`,
             url: GROUPS_URL,
+            extra: { groupId: group.id },
         });
     } catch (e) {
         console.error('push group', e.message);
@@ -260,5 +273,29 @@ export async function checkNewFeedMessages(env) {
         body: fresh.length > 1 ? `${fresh.length} הודעות קוליות חדשות` : `הודעה חדשה מ${name || 'המערכת'}`,
         tag: 'salamon-feed',
         url: FEED_URL,
+        extra: { fileId: fresh[0] },
     });
+}
+
+/** Sends one notification to every app device of a phone (test button, announcements). */
+export async function pushToPhone(env, phone, title, body, extra = {}) {
+    if (!pushEnabled(env)) return { sent: 0, enabled: false };
+    await ensureTables(env);
+    const { results } = await env.DB.prepare("SELECT token FROM push_devices WHERE phone = ?").bind(String(phone)).all();
+    const ok = await Promise.all((results || []).map(r => sendOne(env, r.token, { title, body, tag: 'salamon-' + (extra.type || 'info'), url: '', type: extra.type || 'info', extra })));
+    return { sent: ok.filter(Boolean).length, devices: (results || []).length, enabled: true };
+}
+
+/** Announcement to every app device (from the control center). */
+export async function pushToAllApp(env, title, body) {
+    if (!pushEnabled(env)) return { sent: 0, enabled: false };
+    await ensureTables(env);
+    const { results } = await env.DB.prepare("SELECT token FROM push_devices WHERE kind = 'native'").all();
+    let sent = 0;
+    const list = results || [];
+    for (let i = 0; i < list.length; i += 50) {
+        const ok = await Promise.all(list.slice(i, i + 50).map(r => sendOne(env, r.token, { title, body, tag: 'salamon-announce', url: '', type: 'announce' })));
+        sent += ok.filter(Boolean).length;
+    }
+    return { sent, devices: list.length, enabled: true };
 }
