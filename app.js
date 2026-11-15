@@ -4,7 +4,8 @@
 // - כל פתיחה של האתר מתוך האפליקציה (אחרי כניסה) מדווחת ל-/api/app/hello ונשמרת ב-app_users.
 // - משתמש חסום: כל בקשה שמגיעה מהאפליקציה עם הטוקן שלו נדחית (ראו appBlockGuard ב-worker.js),
 //   והוא לא מקבל התראות. באתר הרגיל בדפדפן הוא ממשיך כרגיל.
-// - הורדות: smti.uk/salamon/app מפנה ל-/api/app/download, שסופר ומפנה לקובץ ב-GitHub.
+// - הורדות: smti.uk/salamon/app/download מגיע ל-/api/app/download, שסופר ומגיש את הקובץ מ-smti.uk עצמו
+//   (דפדפנים מסוננים חוסמים לעתים קרובות את github.com).
 
 import { authenticateUser } from './auth.js';
 import { isMainAdmin } from './adminAuth.js';
@@ -59,7 +60,50 @@ export async function handleAppHello(request, env) {
     return json({ success: true, blocked, message: blocked ? BLOCK_MESSAGE : '' });
 }
 
-/** GET /api/app/download - סופר הורדה ומפנה לקובץ העדכני. */
+const RELEASE_API = 'https://api.github.com/repos/smt-ivr/salamon/releases/tags/android';
+
+/**
+ * The APK, served from smti.uk itself (filtered browsers often block github.com).
+ * Cached at the edge for a few minutes so a new version shows up quickly.
+ */
+async function fetchApk(ctx) {
+    const cache = caches.default;
+    const key = new Request('https://smti.uk/salamon/api/app/__apk-cache');
+    let res = await cache.match(key);
+    if (!res) {
+        const gh = await fetch(APK_URL, { redirect: 'follow', headers: { 'user-agent': 'salamon-app-download' } });
+        if (!gh.ok) return null;
+        const body = await gh.arrayBuffer();
+        res = new Response(body, { headers: { 'content-type': 'application/vnd.android.package-archive', 'cache-control': 'public, max-age=300' } });
+        const put = cache.put(key, res.clone());
+        if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put;
+    }
+    return res;
+}
+
+/** GET /api/app/info - version, size and date of the current APK (for the download page). */
+export async function handleAppInfo(request, env, ctx) {
+    const cache = caches.default;
+    const key = new Request('https://smti.uk/salamon/api/app/__info-cache');
+    const hit = await cache.match(key);
+    if (hit) return hit;
+    let info = { version: '', size: 0, updatedAt: '' };
+    try {
+        const r = await fetch(RELEASE_API, { headers: { 'user-agent': 'salamon-app-info', accept: 'application/vnd.github+json' } });
+        if (r.ok) {
+            const d = await r.json();
+            const asset = (d.assets || []).find(a => a.name === 'salamon.apk');
+            const m = /גרסה\s+([\d.]+)/.exec(d.body || '');
+            info = { version: m ? m[1] : '', size: asset ? asset.size : 0, updatedAt: asset ? asset.updated_at : '' };
+        }
+    } catch (e) {}
+    const res = Response.json({ success: true, ...info }, { headers: { 'cache-control': 'public, max-age=600', 'access-control-allow-origin': '*' } });
+    const put = cache.put(key, res.clone());
+    if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put;
+    return res;
+}
+
+/** GET /api/app/download - counts the download and serves the current APK from smti.uk. */
 export async function handleAppDownload(request, env, ctx) {
     const log = (async () => {
         await ensureTables(env);
@@ -69,7 +113,15 @@ export async function handleAppDownload(request, env, ctx) {
             .bind(getIsraelTimeForDB(), (request.cf && request.cf.country) || '', device).run();
     })().catch(e => console.error('app download log', e.message));
     if (ctx && ctx.waitUntil) ctx.waitUntil(log); else await log;
-    return Response.redirect(APK_URL, 302);
+    const apk = await fetchApk(ctx).catch(() => null);
+    if (!apk) return Response.redirect(APK_URL, 302); // fallback: straight to GitHub
+    return new Response(apk.body, {
+        headers: {
+            'content-type': 'application/vnd.android.package-archive',
+            'content-disposition': 'attachment; filename="salamon.apk"',
+            'cache-control': 'no-store',
+        },
+    });
 }
 
 /**

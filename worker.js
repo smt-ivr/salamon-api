@@ -1,7 +1,7 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
 import { handlePushRegister, handlePushUnregister, checkNewFeedMessages } from './push.js';
-import { handleAppHello, handleAppDownload, handleAdminApp, handleAdminAppBlock, appBlockGuard } from './app.js';
+import { handleAppHello, handleAppDownload, handleAppInfo, handleAdminApp, handleAdminAppBlock, appBlockGuard } from './app.js';
 import { handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
 import { VerificationSystem } from './verification.js';
 import { handleGetMessages, handleStreamMessage } from './messages.js';
@@ -91,6 +91,7 @@ export default {
             
             else if (request.method === "POST" && pathname.endsWith("/api/app/hello")) response = await handleAppHello(request, env);
             else if (request.method === "GET" && pathname.endsWith("/api/app/download")) response = await handleAppDownload(request, env, ctx);
+            else if (request.method === "GET" && pathname.endsWith("/api/app/info")) response = await handleAppInfo(request, env, ctx);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/app")) response = await handleAdminApp(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/app/block")) response = await handleAdminAppBlock(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/push/register")) response = await handlePushRegister(request, env);
