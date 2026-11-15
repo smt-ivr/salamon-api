@@ -1,7 +1,7 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
 import { handlePushRegister, handlePushUnregister, checkNewFeedMessages } from './push.js';
-import { handleNativeConfig, handleNativeLogin, handleNativeLogout, handleNativeHeartbeat, handleNativeTestPush, handleNativePoll, handleAdminNativeConfig, handleAdminNativeDevices, handleAdminNativePush } from './nativeapp.js';
+import { handleNativeConfig, handleNativeLogin, handleNativeLoginGoogle, handleNativeLoginSession, handleNativeCrash, handleAdminNativeCrashes, handleNativeLogout, handleNativeHeartbeat, handleNativeTestPush, handleNativePoll, handleAdminNativeConfig, handleAdminNativeDevices, handleAdminNativePush } from './nativeapp.js';
 import { handleAppHello, handleAppDownload, handleAppInfo, handleAdminApp, handleAdminAppBlock, appBlockGuard } from './app.js';
 import { handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
 import { VerificationSystem } from './verification.js';
@@ -92,6 +92,10 @@ export default {
             
             else if (pathname.endsWith("/api/app/config") && (request.method === "GET" || request.method === "POST")) response = await handleNativeConfig(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/app/login")) response = await handleNativeLogin(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/app/login/google")) response = await handleNativeLoginGoogle(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/app/login/session")) response = await handleNativeLoginSession(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/app/crash")) response = await handleNativeCrash(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/app/crashes")) response = await handleAdminNativeCrashes(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/app/logout")) response = await handleNativeLogout(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/app/heartbeat")) response = await handleNativeHeartbeat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/app/test-push")) response = await handleNativeTestPush(request, env);

@@ -127,6 +127,77 @@ export async function handleNativeLogin(request, env) {
     return json({ success: true, token, user: { phone: user.phone, name: name || '', email: user.email || '' } });
 }
 
+async function issueAppToken(env, user) {
+    await ensureTables(env);
+    const blocked = await env.DB.prepare("SELECT blocked FROM app_users WHERE phone = ?").bind(user.phone).first();
+    if (blocked && blocked.blocked) return json({ error: "הגישה שלך לאפליקציה נחסמה. לפרטים אפשר לפנות לצוות עכשיו סלומון.", appBlocked: true }, 403);
+    const token = crypto.randomUUID();
+    const now = getIsraelTimeForDB();
+    await env.DB.prepare("INSERT INTO user_tokens (id, phone, token_type, created_at, expires_at, last_used_at, session_email) VALUES (?, ?, 'app_perm', ?, NULL, ?, NULL)")
+        .bind(token, user.phone, now, now).run();
+    const name = await getNameFromIni(user.phone, env.YEMOT_TOKEN).catch(() => '');
+    return json({ success: true, token, user: { phone: user.phone, name: name || '', email: user.email || '' } });
+}
+
+/** POST /api/app/login/google { credential } - Google sign-in done in the browser (smti.uk/salamon/app/login). */
+export async function handleNativeLoginGoogle(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const credential = String(body.credential || '');
+    if (!credential) return json({ error: "חסר אימות Google" }, 400);
+    const r = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    const g = await r.json().catch(() => ({}));
+    if (!r.ok || !g.email) return json({ error: "האימות מול Google נכשל" }, 401);
+    if (g.aud !== "89500817024-tbvsuu4dci6bqh173l65ua9lc65pe24p.apps.googleusercontent.com") return json({ error: "בקשה לא מורשית" }, 403);
+    const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(String(g.email).toLowerCase()).first();
+    if (!user) return json({ error: `כתובת המייל ${g.email} לא משויכת לחשבון בעכשיו סלומון.` }, 404);
+    return issueAppToken(env, user);
+}
+
+/** POST /api/app/login/session { userToken } - "continue as…" for someone already signed in to the website in the browser. */
+export async function handleNativeLoginSession(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const user = await authenticateUser(env.DB, body.userToken);
+    if (!user) return json({ error: "החיבור באתר הסתיים. נא להתחבר מחדש." }, 401);
+    if (user.is_master) return json({ error: "אי אפשר לחבר את האפליקציה מחיבור מאסטר" }, 403);
+    return issueAppToken(env, user);
+}
+
+// ---------------------------------------------------------------- דוחות קריסה
+
+let crashTable = false;
+async function ensureCrashTable(env) {
+    if (crashTable) return;
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS app_crashes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, phone TEXT, version TEXT, device TEXT, os TEXT, screen TEXT, message TEXT, stack TEXT
+    )`).run();
+    crashTable = true;
+}
+
+/** POST /api/app/crash { userToken?, device, screen, message, stack } - sent by the app after a crash. */
+export async function handleNativeCrash(request, env) {
+    const body = await request.json().catch(() => ({}));
+    await ensureCrashTable(env);
+    let phone = '';
+    try { const u = body.userToken ? await authenticateUser(env.DB, body.userToken) : null; phone = u ? u.phone : ''; } catch (e) {}
+    const d = body.device || {};
+    await env.DB.prepare("INSERT INTO app_crashes (at, phone, version, device, os, screen, message, stack) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(getIsraelTimeForDB(), phone, String(d.versionName || '').slice(0, 20), String(d.model || '').slice(0, 80), String(d.os || '').slice(0, 30),
+            String(body.screen || '').slice(0, 60), String(body.message || '').slice(0, 500), String(body.stack || '').slice(0, 8000)).run();
+    // keep the table small
+    await env.DB.prepare("DELETE FROM app_crashes WHERE id NOT IN (SELECT id FROM app_crashes ORDER BY id DESC LIMIT 500)").run().catch(() => {});
+    return json({ success: true });
+}
+
+/** POST /api/admin/app/crashes { adminToken } */
+export async function handleAdminNativeCrashes(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const denied = await requireAdmin(env, body);
+    if (denied) return denied;
+    await ensureCrashTable(env);
+    const { results } = await env.DB.prepare("SELECT * FROM app_crashes ORDER BY id DESC LIMIT 200").all();
+    return json({ success: true, crashes: results || [] });
+}
+
 /** POST /api/app/logout { userToken, pushToken } */
 export async function handleNativeLogout(request, env) {
     const body = await request.json().catch(() => ({}));
@@ -176,7 +247,8 @@ export async function handleNativeHeartbeat(request, env) {
         success: true,
         blocked: !!(row && row.blocked),
         blockedMessage: 'הגישה שלך לאפליקציה נחסמה. לפרטים אפשר לפנות לצוות עכשיו סלומון.',
-        user: { phone: user.phone, name, email: user.email || '', canRecord: user.can_record !== 0, canUpload: !!user.can_upload, canListen: user.can_listen !== 0, canTzintuk: user.can_tzintuk !== 0 },
+        user: { phone: user.phone, name, email: user.email || '', canRecord: user.can_record !== 0, canUpload: !!user.can_upload, canListen: user.can_listen !== 0, canTzintuk: user.can_tzintuk !== 0,
+            isAdmin: user.is_admin === 1, adminPermissions: user.admin_permissions || '' },
         config: { ...publicConfig(config, d.versionCode, await latestAppInfo().catch(() => null)), pushConfigured: pushEnabled(env) },
     });
 }
