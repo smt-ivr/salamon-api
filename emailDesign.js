@@ -12,6 +12,8 @@ export const THEMES = {
     royal: { label: 'סגול מלכותי', page: '#f1eefb', card: '#ffffff', text: '#3f3d56', title: '#1e1b4b', muted: '#a09cc0', accent: '#7c3aed', accent2: '#db2777', soft: '#f5f3ff', softBorder: '#ddd6fe' },
     sunset: { label: 'חגיגי', page: '#fdf2e9', card: '#ffffff', text: '#44403c', title: '#431407', muted: '#b4a49a', accent: '#ea580c', accent2: '#e11d48', soft: '#fff7ed', softBorder: '#fed7aa' },
     night: { label: 'לילה', page: '#0b1120', card: '#111827', text: '#cbd5e1', title: '#f8fafc', muted: '#64748b', accent: '#22c55e', accent2: '#38bdf8', soft: '#0f1f17', softBorder: '#166534' },
+    // שחור וזהב, להודעות חגיגיות (השקת האפליקציה)
+    luxe: { label: 'יוקרה', page: '#0e0f12', card: '#16181d', text: '#d6d1c4', title: '#f3e7c4', muted: '#8a8578', accent: '#c9a227', accent2: '#f0d78c', soft: '#1e1b14', softBorder: '#5a4a1c', onAccent: '#1a1508', accentText: '#e9cf7a' },
     minimal: { label: 'נקי ופשוט', page: '#ffffff', card: '#ffffff', text: '#374151', title: '#111827', muted: '#9ca3af', accent: '#111827', accent2: '#111827', soft: '#f9fafb', softBorder: '#e5e7eb' },
 };
 
@@ -75,7 +77,7 @@ function htmlWithTracking(html, link) {
 
 function button(label, href, t, primary) {
     const bg = primary ? t.accent : 'transparent';
-    const color = primary ? '#ffffff' : t.accentText;
+    const color = primary ? (t.onAccent || '#ffffff') : t.accentText;
     const border = primary ? t.accent : t.accentText;
     return `<td style="padding:4px;"><table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="border-radius:12px; background:${bg}; border:2px solid ${border};">
         <a href="${href}" style="display:inline-block; padding:13px 30px; font-size:15.5px; font-weight:700; color:${color}; text-decoration:none; border-radius:12px;">${escapeHtml(label)}</a>
@@ -90,7 +92,7 @@ export function renderEmail({ design, subject, preheader, person = {}, link = u 
     const d = normalizeDesign(design);
     const base = THEMES[d.theme];
     const accent = d.accent || base.accent;
-    const t = { ...base, accent, accent2: d.accent ? d.accent : base.accent2, accentText: d.theme === 'night' ? '#86efac' : accent };
+    const t = { ...base, accent, accent2: d.accent ? d.accent : base.accent2, accentText: d.theme === 'night' ? '#86efac' : (base.accentText && !d.accent ? base.accentText : accent) };
     if (d.theme === 'minimal' && !d.accent) t.accentText = '#111827';
     const p = s => personalize(s, person);
     const align = d.align === 'center' ? 'center' : 'right';
@@ -103,8 +105,8 @@ export function renderEmail({ design, subject, preheader, person = {}, link = u 
     const ctaRow = ctas ? `<tr><td align="${align === 'center' ? 'center' : 'right'}" style="padding:12px 34px 8px 34px;"><table role="presentation" cellspacing="0" cellpadding="0"><tr>${ctas}</tr></table></td></tr>` : '';
     const signature = d.signature ? `<tr><td style="padding:10px 34px 0 34px; font-size:14.5px; line-height:1.6; color:${t.text}; text-align:${align};">${escapeHtml(p(d.signature)).replace(/\n/g, '<br>')}</td></tr>` : '';
     const footnote = d.footnote ? `<tr><td style="padding:14px 34px 0 34px; font-size:12.5px; line-height:1.6; color:${t.muted}; text-align:${align};">${escapeHtml(p(d.footnote)).replace(/\n/g, '<br>')}</td></tr>` : '';
-    const title = d.title ? `<div style="font-size:${d.layout === 'banner' ? 26 : 24}px; line-height:1.35; font-weight:800; color:${d.layout === 'banner' ? '#ffffff' : t.title};">${escapeHtml(p(d.title))}</div>` : '';
-    const eyebrow = d.eyebrow ? `<div style="font-size:13px; font-weight:700; color:${d.layout === 'banner' ? 'rgba(255,255,255,.85)' : t.accentText}; letter-spacing:.3px; margin-bottom:8px;">${escapeHtml(p(d.eyebrow))}</div>` : '';
+    const title = d.title ? `<div style="font-size:${d.layout === 'banner' ? 26 : 24}px; line-height:1.35; font-weight:800; color:${d.layout === 'banner' ? (t.onAccent || '#ffffff') : t.title};">${escapeHtml(p(d.title))}</div>` : '';
+    const eyebrow = d.eyebrow ? `<div style="font-size:13px; font-weight:700; color:${d.layout === 'banner' ? (t.onAccent ? t.onAccent : 'rgba(255,255,255,.85)') : t.accentText}; letter-spacing:.3px; margin-bottom:8px;">${escapeHtml(p(d.eyebrow))}</div>` : '';
     const image = d.bannerUrl ? `<tr><td style="padding:0; font-size:0; line-height:0;"><img src="${escapeHtml(d.bannerUrl)}" width="560" alt="" style="display:block; width:100%; max-width:560px; height:auto; border:0;"></td></tr>` : '';
 
     let head;

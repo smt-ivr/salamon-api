@@ -220,20 +220,43 @@ export async function pushGroupMessage(env, group, senderKey, senderName, text) 
  * רץ כל דקה (משימה מתוזמנת): בודק אם הגיעה הודעה קולית חדשה במערכת הטלפונית,
  * ושולח התראה למי שמאזין להודעות וביקש התראות עליהן.
  */
+/** Last run of the voice-message check, shown in the control center. */
+async function feedStatus(env, status) {
+    await env.DB.prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES ('push_feed_status', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+        .bind(JSON.stringify({ at: getIsraelTimeForDB(), ...status }), getIsraelTimeForDB()).run().catch(() => {});
+}
+
+export async function getFeedStatus(env) {
+    const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'push_feed_status'").first().catch(() => null);
+    try { return row ? JSON.parse(row.value) : null; } catch (e) { return null; }
+}
+
 export async function checkNewFeedMessages(env) {
-    if (!pushEnabled(env) || !env.YEMOT_TOKEN) return;
+    try {
+        return await runFeedCheck(env);
+    } catch (e) {
+        await feedStatus(env, { ok: false, error: String(e && e.message || e).slice(0, 300) });
+        throw e;
+    }
+}
+
+async function runFeedCheck(env) {
+    if (!pushEnabled(env)) return feedStatus(env, { ok: false, reason: 'Firebase לא מוגדר בשרת' });
+    if (!env.YEMOT_TOKEN) return feedStatus(env, { ok: false, reason: 'חסר טוקן של ימות המשיח' });
+    await ensureTables(env);
     // אין טעם לפנות לימות המשיח אם אף מכשיר לא רשום
     const any = await env.DB.prepare("SELECT 1 FROM push_devices LIMIT 1").first();
-    if (!any) return;
+    if (!any) return feedStatus(env, { ok: true, reason: 'אין מכשירים רשומים' });
 
     const token = env.YEMOT_TOKEN;
     const res = await fetch(`https://www.call2all.co.il/ym/api/GetIVR2Dir?token=${token}&path=${encodeURIComponent(FEED_FOLDER)}&filesLimit=10&filesFrom=0`);
     const data = await res.json().catch(() => null);
-    if (!data || data.responseStatus !== 'OK') return;
+    if (!data || data.responseStatus !== 'OK') return feedStatus(env, { ok: false, reason: 'ימות המשיח לא החזירו רשימה', yemot: data && data.responseStatus });
     const ids = (data.files || [])
         .filter(f => f.fileType === 'AUDIO' && /^\d+\.(wav|mp3)$/i.test(f.name))
         .map(f => Number(f.name.split('.')[0]));
-    if (!ids.length) return;
+    if (!ids.length) return feedStatus(env, { ok: true, reason: 'אין הודעות בתיקייה' });
     const newest = Math.max(...ids);
 
     const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'push_last_feed_id'").first();
@@ -241,7 +264,8 @@ export async function checkNewFeedMessages(env) {
     await env.DB.prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES ('push_last_feed_id', ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).bind(String(newest), getIsraelTimeForDB()).run();
     // בפעם הראשונה רק שומרים את המצב, בלי התראה על הודעות ישנות
-    if (last === null || newest <= last) return;
+    if (last === null) return feedStatus(env, { ok: true, newest, reason: 'הפעלה ראשונה: נשמרה ההודעה האחרונה' });
+    if (newest <= last) return feedStatus(env, { ok: true, newest, reason: 'אין הודעה חדשה' });
 
     const fresh = ids.filter(id => id > last).sort((a, b) => b - a);
     // מי הקליט את ההודעה האחרונה (לשם בהתראה, ולסינון לפי רשימה לבנה/שחורה)
@@ -267,7 +291,7 @@ export async function checkNewFeedMessages(env) {
         return true;
     }).map(u => u.phone);
 
-    await pushToPhones(env, phones, {
+    const result = await pushToPhones(env, phones, {
         kind: 'feed',
         title: 'עכשיו סלומון',
         body: fresh.length > 1 ? `${fresh.length} הודעות קוליות חדשות` : `הודעה חדשה מ${name || 'המערכת'}`,
@@ -275,6 +299,7 @@ export async function checkNewFeedMessages(env) {
         url: FEED_URL,
         extra: { fileId: fresh[0] },
     });
+    return feedStatus(env, { ok: true, newest, newMessages: fresh.length, recorder, recipients: phones.length, sent: result.sent, reason: 'נשלחו התראות' });
 }
 
 /** Sends one notification to every app device of a phone (test button, announcements). */
