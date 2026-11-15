@@ -74,13 +74,15 @@ export async function handleAppHello(request, env) {
  */
 async function fetchApk(ctx) {
     const cache = caches.default;
-    const key = new Request('https://smti.uk/salamon/api/app/__apk-cache');
+    // keyed by the published build, so a new version is served right away
+    const latest = await latestAppInfo(ctx).catch(() => null);
+    const key = new Request('https://smti.uk/salamon/api/app/__apk-cache-' + ((latest && latest.versionCode) || 0));
     let res = await cache.match(key);
     if (!res) {
         const gh = await fetch(APK_URL, { redirect: 'follow', headers: { 'user-agent': 'salamon-app-download' } });
         if (!gh.ok) return null;
         const body = await gh.arrayBuffer();
-        res = new Response(body, { headers: { 'content-type': 'application/vnd.android.package-archive', 'cache-control': 'public, max-age=300' } });
+        res = new Response(body, { headers: { 'content-type': 'application/vnd.android.package-archive', 'cache-control': 'public, max-age=86400' } });
         const put = cache.put(key, res.clone());
         if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put;
     }
@@ -102,7 +104,7 @@ export async function latestAppInfo(ctx) {
         }
     } catch (e) {}
     const out = { success: true, ...(info || { version: '', versionCode: 0, size: 0, updatedAt: '' }) };
-    const res = Response.json(out, { headers: { 'cache-control': `public, max-age=${info ? 600 : 60}` } });
+    const res = Response.json(out, { headers: { 'cache-control': `public, max-age=${info ? 60 : 30}` } });
     const put = cache.put(key, res);
     if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put;
     return out;
@@ -111,7 +113,7 @@ export async function latestAppInfo(ctx) {
 /** GET /api/app/info - version, size and date of the current APK (for the download page). */
 export async function handleAppInfo(request, env, ctx) {
     const info = await latestAppInfo(ctx);
-    return Response.json(info, { headers: { 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
+    return Response.json(info, { headers: { 'cache-control': 'no-cache', 'access-control-allow-origin': '*' } });
 }
 
 /** GET /api/app/download - counts the download and serves the current APK from smti.uk. */
