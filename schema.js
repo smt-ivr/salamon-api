@@ -275,6 +275,17 @@ const STATEMENTS = [
         view_count INTEGER DEFAULT 1,
         PRIMARY KEY (file_id, phone)
     )`,
+
+    // אפליקציית האנדרואיד: מכשירים שמקבלים התראות (Firebase), גם כשהאפליקציה סגורה
+    `CREATE TABLE IF NOT EXISTS push_devices (
+        token TEXT PRIMARY KEY,
+        phone TEXT NOT NULL,
+        platform TEXT DEFAULT 'android',
+        app_version TEXT,
+        created_at TEXT,
+        last_seen_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_push_devices_phone ON push_devices (phone)`,
 ];
 
 // עמודות שנוספות לטבלאות קיימות. SQLite לא תומך ב-IF NOT EXISTS על עמודות, לכן כל אחת נבדקת בנפרד.
