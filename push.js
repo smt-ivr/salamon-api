@@ -7,6 +7,7 @@
 
 import { authenticateUser } from './auth.js';
 import { getIsraelTimeForDB } from './timeUtils.js';
+import { blockedAppPhones } from './app.js';
 
 const FEED_FOLDER = 'ivr2:/1/2';
 const FEED_URL = 'https://smti.uk/salamon/v2#feed';
@@ -50,6 +51,9 @@ export async function handlePushUnregister(request, env) {
 export async function pushToPhones(env, phones, { kind, title, body, tag, url }) {
     if (!pushEnabled(env)) return { sent: 0 };
     phones = [...new Set((phones || []).filter(Boolean).map(String))];
+    // מי שנחסם באפליקציה לא מקבל התראות
+    const blocked = await blockedAppPhones(env, phones).catch(() => new Set());
+    phones = phones.filter(p => !blocked.has(p));
     if (!phones.length) return { sent: 0 };
 
     let sent = 0;
