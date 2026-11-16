@@ -38,6 +38,8 @@ export async function ensureTables(env) {
             device TEXT
         )`),
         env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_app_downloads_at ON app_downloads (at)`),
+        env.DB.prepare(`CREATE TABLE IF NOT EXISTS app_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT NOT NULL, phone TEXT, pid TEXT, title TEXT, body TEXT, type TEXT, cmd TEXT, cid TEXT, created_at TEXT, delivered_at TEXT)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_app_inbox_token ON app_inbox (token, delivered_at)`),
         env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_devices (token TEXT PRIMARY KEY, phone TEXT NOT NULL, platform TEXT DEFAULT 'android', app_version TEXT, created_at TEXT, last_seen_at TEXT)`),
     ]);
     // device details for the dedicated app (also added by schema.js; done here so the app never depends on it)
@@ -46,7 +48,7 @@ export async function ensureTables(env) {
         ['notify_feed', 'INTEGER DEFAULT 1'], ['notify_chat', 'INTEGER DEFAULT 1'], ['notify_groups', 'INTEGER DEFAULT 1'],
         // delivery receipts and remote commands
         ['last_push_at', 'TEXT'], ['last_push_title', 'TEXT'], ['last_ack_at', 'TEXT'], ['last_ack_title', 'TEXT'],
-        ['cmd_id', 'TEXT'], ['cmd_name', 'TEXT'], ['cmd_sent_at', 'TEXT'], ['cmd_ack_at', 'TEXT']];
+        ['cmd_id', 'TEXT'], ['cmd_name', 'TEXT'], ['cmd_sent_at', 'TEXT'], ['cmd_ack_at', 'TEXT'], ['device_info', 'TEXT']];
     for (const [name, type] of want) {
         if (!cols.has(name)) await env.DB.prepare(`ALTER TABLE push_devices ADD COLUMN ${name} ${type}`).run().catch(() => {});
     }

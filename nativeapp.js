@@ -6,7 +6,7 @@
 import { authenticateUser } from './auth.js';
 import { isMainAdmin } from './adminAuth.js';
 import { getIsraelTimeForDB } from './timeUtils.js';
-import { getNameFromIni } from './yemot.js';
+import { getNameFromIni, getAllNamesFromIni } from './yemot.js';
 import { ensureTables, latestAppInfo } from './app.js';
 import { pushEnabled, pushToPhone, pushToAllApp, getFeedStatus, checkNewFeedMessages, sendOne } from './push.js';
 import { getSettings } from './schema.js';
@@ -239,6 +239,10 @@ export async function handleNativeHeartbeat(request, env) {
                 flag(n.feed), flag(n.chat), flag(n.groups)).run();
         // the same device with an old token (token refresh): keep only the newest
         if (d.id) await env.DB.prepare("DELETE FROM push_devices WHERE device_id = ? AND token != ?").bind(String(d.id).slice(0, 64), pushToken).run();
+        if (body.info && typeof body.info === 'object') {
+            const info = JSON.stringify({ ...body.info, ip: request.headers.get('cf-connecting-ip') || '', country: (request.cf && request.cf.country) || '', city: (request.cf && request.cf.city) || '', reportedAt: now }).slice(0, 4000);
+            await env.DB.prepare("UPDATE push_devices SET device_info = ? WHERE token = ?").bind(info, pushToken).run().catch(() => {});
+        }
     }
 
     const row = await env.DB.prepare("SELECT blocked FROM app_users WHERE phone = ?").bind(user.phone).first();
@@ -253,6 +257,7 @@ export async function handleNativeHeartbeat(request, env) {
         user: { phone: user.phone, name, email: user.email || '', canRecord: user.can_record !== 0, canUpload: !!user.can_upload, canListen: user.can_listen !== 0, canTzintuk: user.can_tzintuk !== 0,
             isAdmin: user.is_admin === 1 || isSuperAdmin, isSuperAdmin, adminPermissions: user.admin_permissions || '' },
         config: { ...publicConfig(config, d.versionCode, await latestAppInfo().catch(() => null)), pushConfigured: pushEnabled(env) },
+        pending: await pendingFor(env, pushToken, user.phone),
     });
 }
 
@@ -294,6 +299,7 @@ export async function handleNativePoll(request, env) {
         feedNewest,
         chatUnread: (chat && chat.n) || 0, chatLast: (chat && chat.last) || 0,
         groupsUnread: (groups && groups.n) || 0, groupsLast: (groups && groups.last) || 0,
+        pending: await pendingFor(env, String(body.pushToken || ''), user.phone),
     });
 }
 
@@ -325,7 +331,7 @@ export async function handleAdminNativeDevices(request, env) {
     if (denied) return denied;
     await ensureTables(env);
     const { results } = await env.DB.prepare(`SELECT phone, kind, device_model, os_version, app_version, created_at, last_seen_at, notify_feed, notify_chat, notify_groups
-        , device_id, last_push_at, last_push_title, last_ack_at, last_ack_title, cmd_id, cmd_name, cmd_sent_at, cmd_ack_at
+        , device_id, device_info, (SELECT COUNT(*) FROM app_inbox i WHERE i.token = push_devices.token AND i.delivered_at IS NULL) AS pending, (SELECT opens FROM app_users u WHERE u.phone = push_devices.phone) AS opens, last_push_at, last_push_title, last_ack_at, last_ack_title, cmd_id, cmd_name, cmd_sent_at, cmd_ack_at
         FROM push_devices ORDER BY last_seen_at DESC LIMIT 3000`).all();
     const versions = {};
     for (const r of results || []) if (r.kind === 'native') versions[r.app_version || '?'] = (versions[r.app_version || '?'] || 0) + 1;
@@ -342,9 +348,18 @@ export async function handleAdminNativePush(request, env) {
     const text = String(body.body || '').trim().slice(0, 300);
     if (!text) return json({ error: 'נא לכתוב את תוכן ההתראה' }, 400);
     if (!pushEnabled(env)) return json({ error: 'ההתראות לא מוגדרות בשרת (FCM_SERVICE_ACCOUNT)' }, 400);
-    const r = body.phone
-        ? await pushToPhone(env, String(body.phone).replace(/\D/g, ''), title, text, { type: 'announce' })
-        : await pushToAllApp(env, title, text);
+    await ensureTables(env);
+    const phone = String(body.phone || '').replace(/\D/g, '');
+    const { results } = phone
+        ? await env.DB.prepare("SELECT token, phone FROM push_devices WHERE kind = 'native' AND phone = ?").bind(phone).all()
+        : await env.DB.prepare("SELECT token, phone FROM push_devices WHERE kind = 'native'").all();
+    const list = results || [];
+    let sent = 0;
+    for (let i = 0; i < list.length; i += 50) {
+        const ok = await Promise.all(list.slice(i, i + 50).map(row => sendTracked(env, row, { title, body: text, type: 'announce', tag: 'salamon-announce' })));
+        sent += ok.filter(Boolean).length;
+    }
+    const r = { sent, devices: list.length, enabled: true };
     return json({ success: true, ...r });
 }
 
@@ -361,6 +376,8 @@ export async function handleNativeAck(request, env) {
     const now = getIsraelTimeForDB();
     await env.DB.prepare("UPDATE push_devices SET last_ack_at = ?, last_ack_title = ? WHERE token = ? AND phone = ?")
         .bind(now, String(body.title || body.type || '').slice(0, 80), token, user.phone).run();
+    await env.DB.prepare("UPDATE app_inbox SET delivered_at = ? WHERE token = ? AND delivered_at IS NULL AND ((pid = ? AND pid != '') OR (cid = ? AND cid != ''))")
+        .bind(now, token, String(body.pid || ''), String(body.cmd || '')).run().catch(() => {});
     if (body.cmd) {
         await env.DB.prepare("UPDATE push_devices SET cmd_ack_at = ? WHERE token = ? AND phone = ? AND cmd_id = ?")
             .bind(now, token, user.phone, String(body.cmd)).run();
@@ -385,20 +402,64 @@ export async function handleAdminNativeCommand(request, env) {
     if (!COMMANDS[command]) return json({ error: 'פקודה לא מוכרת' }, 400);
     if (!pushEnabled(env)) return json({ error: 'ההתראות לא מוגדרות בשרת (FCM_SERVICE_ACCOUNT)' }, 400);
     const { results } = body.deviceId
-        ? await env.DB.prepare("SELECT token FROM push_devices WHERE kind = 'native' AND device_id = ?").bind(String(body.deviceId)).all()
-        : await env.DB.prepare("SELECT token FROM push_devices WHERE kind = 'native' AND phone = ?").bind(String(body.phone || '').replace(/\D/g, '')).all();
+        ? await env.DB.prepare("SELECT token, phone FROM push_devices WHERE kind = 'native' AND device_id = ?").bind(String(body.deviceId)).all()
+        : await env.DB.prepare("SELECT token, phone FROM push_devices WHERE kind = 'native' AND phone = ?").bind(String(body.phone || '').replace(/\D/g, '')).all();
     if (!results || !results.length) return json({ error: 'המכשיר לא נמצא או שאינו רשום להתראות' }, 404);
     const now = getIsraelTimeForDB();
     let sent = 0;
     for (const r of results) {
         const cid = crypto.randomUUID().slice(0, 12);
         await env.DB.prepare("UPDATE push_devices SET cmd_id = ?, cmd_name = ?, cmd_sent_at = ?, cmd_ack_at = NULL WHERE token = ?").bind(cid, command, now, r.token).run();
-        const ok = await sendOne(env, r.token, {
+        // older commands that never arrived are replaced by this one
+        await env.DB.prepare("UPDATE app_inbox SET delivered_at = 'replaced' WHERE token = ? AND delivered_at IS NULL AND type = 'command'").bind(r.token).run();
+        const ok = await sendTracked(env, r, {
             title: command === 'ping' ? 'בדיקת התראה ✓' : COMMANDS[command],
             body: command === 'ping' ? 'ההתראה הגיעה. אפשר להתעלם מההודעה.' : '',
-            tag: 'salamon-cmd', type: 'command', extra: { cmd: command, cid },
+            tag: 'salamon-cmd', type: 'command', cmd: command, cid,
         });
         if (ok) sent++;
     }
     return json({ success: true, sent, devices: results.length, label: COMMANDS[command] });
+}
+
+// ---------------------------------------------------------------- messages that did not arrive
+
+/**
+ * Announcements and commands from the control center are also kept here until the phone confirms them.
+ * A phone that missed the push (switched off, battery saver, no internet) gets them the next time the
+ * app opens or checks in the background.
+ */
+async function sendTracked(env, row, { title, body, type, tag, cmd, cid }) {
+    const pid = crypto.randomUUID().slice(0, 12);
+    await env.DB.prepare("INSERT INTO app_inbox (token, phone, pid, title, body, type, cmd, cid, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(row.token, row.phone || '', pid, title, body || '', type, cmd || null, cid || null, getIsraelTimeForDB()).run();
+    const extra = { pid };
+    if (cmd) { extra.cmd = cmd; extra.cid = cid; }
+    return sendOne(env, row.token, { title, body, tag, type, extra });
+}
+
+async function pendingFor(env, token, phone) {
+    if (!token) return [];
+    try {
+        await ensureTables(env);
+        const since = getIsraelTimeForDB(new Date(Date.now() - 7 * 86400000));
+        const { results } = await env.DB.prepare(`SELECT pid, title, body, type, cmd, cid, created_at AS createdAt FROM app_inbox
+            WHERE token = ? AND phone = ? AND delivered_at IS NULL AND created_at >= ? ORDER BY id ASC LIMIT 10`).bind(token, phone, since).all();
+        return results || [];
+    } catch (e) { return []; }
+}
+
+/** POST /api/app/members { userToken } - everyone registered in the system (names; phones for managers). */
+export async function handleNativeMembers(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const user = await authenticateUser(env.DB, body.userToken);
+    if (!user) return json({ error: "יש להתחבר מחדש" }, 401);
+    const names = await getAllNamesFromIni(env.YEMOT_TOKEN).catch(() => ({}));
+    const settings = await getSettings(env).catch(() => ({}));
+    const manager = user.is_admin === 1 || (!!settings.super_admin_phone && settings.super_admin_phone === user.phone);
+    const members = Object.entries(names || {})
+        .filter(([, n]) => n && n.trim())
+        .map(([phone, name]) => manager ? { name, phone } : { name })
+        .sort((a, b) => a.name.localeCompare(b.name, 'he'));
+    return json({ success: true, total: members.length, members, withPhones: manager });
 }

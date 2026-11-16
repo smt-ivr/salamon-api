@@ -99,7 +99,7 @@ function inQuietHours(a, b) {
 
 export async function sendOne(env, token, { title, body, tag, url, type, extra }) {
     try {
-        const pid = crypto.randomUUID().slice(0, 12);
+        const pid = (extra && extra.pid) || crypto.randomUUID().slice(0, 12);
         const sa = serviceAccount(env);
         const access = await accessToken(env);
         const res = await fetch(`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`, {
