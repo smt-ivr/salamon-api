@@ -12,7 +12,7 @@ import { getPresenceMap } from './activity.js';
 import { markAdminActive, maybeNotifyAdmin, canEmailCustomer, sendCustomerMessageEmail, sendTestAdminEmail, getSuperAdminEmail, redeemEmailLink } from './chatNotify.js';
 import { logActivity } from './activity.js';
 import { readUpload, storeFile, storeThumb, removeFiles, fileInfoWithLinks, cookieMode, resetFileModeCache, sessionCookie, withCookies, USER_COOKIE, ADMIN_COOKIE, messagePreview, userFileQuotaExceeded, parseLimits, isLimited, MAX_EMAIL_ATTACHMENT } from './chatFiles.js';
-import { pushChatReply } from './push.js';
+import { pushChatReply, pushAdminChat } from './push.js';
 
 const MAX_TEXT = 2000;
 const TYPING_SECONDS = 7;
@@ -164,7 +164,10 @@ export async function handleUserSendMessage(request, env, ctx) {
             .bind(user.phone, text, now, now, replyTo).run();
         await upsertThread(env, user.phone, { user_typing_at: null, archived: 0 });
 
-        const notify = maybeNotifyAdmin(env, user.phone).catch(e => console.error('admin notify failed', e));
+        const notify = Promise.all([
+            maybeNotifyAdmin(env, user.phone).catch(e => console.error('admin notify failed', e)),
+            pushAdminChat(env, user.phone, text).catch(e => console.error('admin push failed', e)),
+        ]);
         if (ctx && ctx.waitUntil) ctx.waitUntil(notify); else await notify;
 
         return Response.json({ success: true, message: "ההודעה נשלחה בהצלחה", id: res.meta && res.meta.last_row_id, createdAt: now });
@@ -192,7 +195,10 @@ export async function handleUserSendFile(request, env, ctx) {
             .bind(user.phone, text, now, now, replyTo, f.file_key, f.file_name, f.file_type, f.file_size, th.file_thumb_key, th.file_meta).run();
         await upsertThread(env, user.phone, { user_typing_at: null, archived: 0 });
 
-        const notify = maybeNotifyAdmin(env, user.phone).catch(e => console.error('admin notify failed', e));
+        const notify = Promise.all([
+            maybeNotifyAdmin(env, user.phone).catch(e => console.error('admin notify failed', e)),
+            pushAdminChat(env, user.phone, (text ? text + ' · ' : '') + '📎 ' + (f.file_name || 'קובץ')).catch(e => console.error('admin push failed', e)),
+        ]);
         if (ctx && ctx.waitUntil) ctx.waitUntil(notify); else await notify;
 
         return Response.json({ success: true, message: "הקובץ נשלח", id: res.meta && res.meta.last_row_id, createdAt: now });
