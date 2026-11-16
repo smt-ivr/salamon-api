@@ -1,7 +1,7 @@
 // worker.js
 import { handleCheckIdentifier, handleRegister, handleLogin, handleGoogleLogin, handleGetProfile, handleUpdateProfile, handleChangePassword, handleResetPasswordConfirm, handleLogout, authenticateUser, handleCheckUnsubscribeToken, handleConfirmUnsubscribe, handleUnblockEmail } from './auth.js';
 import { handlePushRegister, handlePushUnregister, checkNewFeedMessages } from './push.js';
-import { handleNativeConfig, handleNativeLogin, handleNativeLoginGoogle, handleNativeLoginSession, handleNativeCrash, handleAdminNativeCrashes, handleNativeLogout, handleNativeHeartbeat, handleNativeTestPush, handleNativePoll, handleAdminNativeConfig, handleAdminNativeDevices, handleAdminNativePush } from './nativeapp.js';
+import { handleNativeConfig, handleNativeLogin, handleNativeLoginGoogle, handleNativeLoginSession, handleNativeCrash, handleAdminNativeCrashes, handleNativeLogout, handleNativeHeartbeat, handleNativeTestPush, handleNativePoll, handleAdminNativeConfig, handleAdminNativeDevices, handleAdminNativePush, handleNativeAck, handleAdminNativeCommand } from './nativeapp.js';
 import { handleAppHello, handleAppDownload, handleAppInfo, handleAdminApp, handleAdminAppBlock, appBlockGuard } from './app.js';
 import { handleAdminGetUsers, handleAdminUpdateUser, handleAdminGetUserFullProfile, handleAdminDisconnectUserTokens, handleAdminCreateUser, handleAdminDeleteUser, handleAdminGetTables, handleAdminExecuteQuery, handleAdminUpdateYemotName, handleAdminGetPermissions, handleAdminGetAuditLogs, handleAdminGetYemotNamesList } from './admin.js';
 import { VerificationSystem } from './verification.js';
@@ -100,9 +100,11 @@ export default {
             else if (request.method === "POST" && pathname.endsWith("/api/app/heartbeat")) response = await handleNativeHeartbeat(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/app/test-push")) response = await handleNativeTestPush(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/app/poll")) response = await handleNativePoll(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/app/ack")) response = await handleNativeAck(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/app/config")) response = await handleAdminNativeConfig(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/app/devices")) response = await handleAdminNativeDevices(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/admin/app/push")) response = await handleAdminNativePush(request, env);
+            else if (request.method === "POST" && pathname.endsWith("/api/admin/app/command")) response = await handleAdminNativeCommand(request, env);
             else if (request.method === "POST" && pathname.endsWith("/api/app/hello")) response = await handleAppHello(request, env);
             else if (request.method === "GET" && pathname.endsWith("/api/app/download")) response = await handleAppDownload(request, env, ctx);
             else if (request.method === "GET" && pathname.endsWith("/api/app/info")) response = await handleAppInfo(request, env, ctx);

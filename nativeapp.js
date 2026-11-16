@@ -8,7 +8,8 @@ import { isMainAdmin } from './adminAuth.js';
 import { getIsraelTimeForDB } from './timeUtils.js';
 import { getNameFromIni } from './yemot.js';
 import { ensureTables, latestAppInfo } from './app.js';
-import { pushEnabled, pushToPhone, pushToAllApp, getFeedStatus, checkNewFeedMessages } from './push.js';
+import { pushEnabled, pushToPhone, pushToAllApp, getFeedStatus, checkNewFeedMessages, sendOne } from './push.js';
+import { getSettings } from './schema.js';
 
 function json(data, status = 200) { return Response.json(data, { status }); }
 
@@ -243,12 +244,14 @@ export async function handleNativeHeartbeat(request, env) {
     const row = await env.DB.prepare("SELECT blocked FROM app_users WHERE phone = ?").bind(user.phone).first();
     const config = await readConfig(env);
     const name = body.open ? await getNameFromIni(user.phone, env.YEMOT_TOKEN).catch(() => '') : undefined;
+    const settings = await getSettings(env).catch(() => ({}));
+    const isSuperAdmin = !!settings.super_admin_phone && settings.super_admin_phone === user.phone;
     return json({
         success: true,
         blocked: !!(row && row.blocked),
         blockedMessage: 'הגישה שלך לאפליקציה נחסמה. לפרטים אפשר לפנות לצוות עכשיו סלומון.',
         user: { phone: user.phone, name, email: user.email || '', canRecord: user.can_record !== 0, canUpload: !!user.can_upload, canListen: user.can_listen !== 0, canTzintuk: user.can_tzintuk !== 0,
-            isAdmin: user.is_admin === 1, adminPermissions: user.admin_permissions || '' },
+            isAdmin: user.is_admin === 1 || isSuperAdmin, isSuperAdmin, adminPermissions: user.admin_permissions || '' },
         config: { ...publicConfig(config, d.versionCode, await latestAppInfo().catch(() => null)), pushConfigured: pushEnabled(env) },
     });
 }
@@ -322,6 +325,7 @@ export async function handleAdminNativeDevices(request, env) {
     if (denied) return denied;
     await ensureTables(env);
     const { results } = await env.DB.prepare(`SELECT phone, kind, device_model, os_version, app_version, created_at, last_seen_at, notify_feed, notify_chat, notify_groups
+        , device_id, last_push_at, last_push_title, last_ack_at, last_ack_title, cmd_id, cmd_name, cmd_sent_at, cmd_ack_at
         FROM push_devices ORDER BY last_seen_at DESC LIMIT 3000`).all();
     const versions = {};
     for (const r of results || []) if (r.kind === 'native') versions[r.app_version || '?'] = (versions[r.app_version || '?'] || 0) + 1;
@@ -342,4 +346,59 @@ export async function handleAdminNativePush(request, env) {
         ? await pushToPhone(env, String(body.phone).replace(/\D/g, ''), title, text, { type: 'announce' })
         : await pushToAllApp(env, title, text);
     return json({ success: true, ...r });
+}
+
+/**
+ * POST /api/app/ack { userToken, pushToken, pid, type, title, cmd? } - the app confirms every push it
+ * received (and every remote command it ran), so the console shows whether notifications really arrive.
+ */
+export async function handleNativeAck(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const user = await authenticateUser(env.DB, body.userToken);
+    if (!user) return json({ error: "יש להתחבר מחדש" }, 401);
+    await ensureTables(env);
+    const token = String(body.pushToken || '');
+    const now = getIsraelTimeForDB();
+    await env.DB.prepare("UPDATE push_devices SET last_ack_at = ?, last_ack_title = ? WHERE token = ? AND phone = ?")
+        .bind(now, String(body.title || body.type || '').slice(0, 80), token, user.phone).run();
+    if (body.cmd) {
+        await env.DB.prepare("UPDATE push_devices SET cmd_ack_at = ? WHERE token = ? AND phone = ? AND cmd_id = ?")
+            .bind(now, token, user.phone, String(body.cmd)).run();
+    }
+    return json({ success: true });
+}
+
+const COMMANDS = {
+    ping: 'בדיקת התראה', restart: 'הפעלה מחדש', refresh: 'רענון הגדרות', logout: 'ניתוק המכשיר', update: 'בקשת עדכון',
+};
+
+/**
+ * POST /api/admin/app/command { adminToken, deviceId | phone, command } - a remote command to one device
+ * (or every device of a user). The app runs it and acks, so the console sees "received ✓".
+ */
+export async function handleAdminNativeCommand(request, env) {
+    const body = await request.json().catch(() => ({}));
+    const denied = await requireAdmin(env, body);
+    if (denied) return denied;
+    await ensureTables(env);
+    const command = String(body.command || '');
+    if (!COMMANDS[command]) return json({ error: 'פקודה לא מוכרת' }, 400);
+    if (!pushEnabled(env)) return json({ error: 'ההתראות לא מוגדרות בשרת (FCM_SERVICE_ACCOUNT)' }, 400);
+    const { results } = body.deviceId
+        ? await env.DB.prepare("SELECT token FROM push_devices WHERE kind = 'native' AND device_id = ?").bind(String(body.deviceId)).all()
+        : await env.DB.prepare("SELECT token FROM push_devices WHERE kind = 'native' AND phone = ?").bind(String(body.phone || '').replace(/\D/g, '')).all();
+    if (!results || !results.length) return json({ error: 'המכשיר לא נמצא או שאינו רשום להתראות' }, 404);
+    const now = getIsraelTimeForDB();
+    let sent = 0;
+    for (const r of results) {
+        const cid = crypto.randomUUID().slice(0, 12);
+        await env.DB.prepare("UPDATE push_devices SET cmd_id = ?, cmd_name = ?, cmd_sent_at = ?, cmd_ack_at = NULL WHERE token = ?").bind(cid, command, now, r.token).run();
+        const ok = await sendOne(env, r.token, {
+            title: command === 'ping' ? 'בדיקת התראה ✓' : COMMANDS[command],
+            body: command === 'ping' ? 'ההתראה הגיעה. אפשר להתעלם מההודעה.' : '',
+            tag: 'salamon-cmd', type: 'command', extra: { cmd: command, cid },
+        });
+        if (ok) sent++;
+    }
+    return json({ success: true, sent, devices: results.length, label: COMMANDS[command] });
 }

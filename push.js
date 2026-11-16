@@ -97,8 +97,9 @@ function inQuietHours(a, b) {
     return s <= e ? cur >= s && cur < e : cur >= s || cur < e;
 }
 
-async function sendOne(env, token, { title, body, tag, url, type, extra }) {
+export async function sendOne(env, token, { title, body, tag, url, type, extra }) {
     try {
+        const pid = crypto.randomUUID().slice(0, 12);
         const sa = serviceAccount(env);
         const access = await accessToken(env);
         const res = await fetch(`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`, {
@@ -110,14 +111,19 @@ async function sendOne(env, token, { title, body, tag, url, type, extra }) {
                     // הודעת נתונים בלבד: האפליקציה מציגה אותה בעצמה, עם אותו מראה כמו בזמן שהיא פתוחה
                     data: {
                         title: String(title || ''), body: String(body || ''), tag: String(tag || 'salamon'), url: String(url || ''),
-                        type: String(type || ''),
+                        type: String(type || ''), pid,
                         ...Object.fromEntries(Object.entries(extra || {}).map(([k, v]) => [k, String(v)])),
                     },
                     android: { priority: 'HIGH', ttl: '86400s' },
                 },
             }),
         });
-        if (res.ok) return true;
+        if (res.ok) {
+            // remembered so the console can compare "sent" with "received" (the app acks every push)
+            await env.DB.prepare("UPDATE push_devices SET last_push_at = ?, last_push_title = ? WHERE token = ?")
+                .bind(getIsraelTimeForDB(), String(title || type || '').slice(0, 80), token).run().catch(() => {});
+            return true;
+        }
         const err = await res.text();
         // מכשיר שהסיר את האפליקציה או טוקן שפג: מוחקים אותו
         if (res.status === 404 || /UNREGISTERED|registration-token-not-registered|INVALID_ARGUMENT.*token/i.test(err)) {
@@ -323,4 +329,24 @@ export async function pushToAllApp(env, title, body) {
         sent += ok.filter(Boolean).length;
     }
     return { sent, devices: list.length, enabled: true };
+}
+
+/**
+ * A customer wrote in the support chat: the super admin gets a notification in the app on every message
+ * (one notification per customer, updated with the latest text). Tapping it opens the control center.
+ */
+export async function pushAdminChat(env, phone, preview) {
+    if (!pushEnabled(env)) return { sent: 0 };
+    const { getSettings } = await import('./schema.js');
+    const s = await getSettings(env).catch(() => ({}));
+    const admin = s.super_admin_phone;
+    if (!admin || admin === phone) return { sent: 0 };
+    const { getNameFromIni } = await import('./yemot.js');
+    const name = await getNameFromIni(phone, env.YEMOT_TOKEN).catch(() => null);
+    const { results } = await env.DB.prepare("SELECT token FROM push_devices WHERE phone = ? AND kind = 'native'").bind(String(admin)).all();
+    const ok = await Promise.all((results || []).map(r => sendOne(env, r.token, {
+        title: `💬 הודעה חדשה מ${name || phone}`, body: String(preview || 'הודעה חדשה בצ׳אט').slice(0, 200),
+        tag: 'salamon-admin-chat-' + phone, url: '', type: 'admin_chat', extra: { phone },
+    })));
+    return { sent: ok.filter(Boolean).length };
 }
